@@ -1,5 +1,27 @@
 # GLM-5.3-Flash on 2× DGX Spark — dspark-serve
 
+> ## ⚠️ 고지 · Disclaimer
+>
+> 이 저장소는 **있는 그대로(as-is)** 공개됩니다. 어떤 보증도 하지 않습니다.
+>
+> - 이 코드를 사용해 발생하는 **모든 결과와 책임은 사용자 본인**에게 있습니다.
+>   데이터 손실, 장비 손상, 비용 발생, 서비스 중단, 법적 분쟁 — 무엇이든
+>   작성자는 책임지지 않습니다.
+> - 운영 환경에 그대로 올리라고 만든 물건이 아닙니다. **본인 환경에서 직접
+>   검증한 뒤** 쓰세요.
+> - 관할 **법령과 제3자 약관(모델·API·서비스 라이선스 포함)을 지킬 책임은
+>   전적으로 사용자**에게 있습니다.
+> - 문서에 적힌 주소·설정·수치는 작성자의 환경 기준입니다. 그대로 복사해 쓰지 마세요.
+> - 이 구성에는 모델의 응답 거부 동작을 요청 단위로 바꾸는 스위치가 포함돼
+  있습니다. **연구·평가 목적**으로 공개하며, 그 기능으로 생성된 출력과
+  그 사용에 대한 책임은 전적으로 사용자에게 있습니다.
+>
+> *Provided **as-is**, without warranty of any kind. You bear sole responsibility
+> for any use and for compliance with applicable laws and third-party terms.
+> See [LICENSE](LICENSE).*
+
+---
+
 DGX Spark(GB10) **두 대**를 200GbE 레일로 묶어 **GLM-5.3-Flash**(4bpw EXL3)를 vLLM으로 서빙하는 구성이다.
 컨텍스트 512K, 동시 4요청, OpenAI 호환 API. 원본 모델을 서빙하면서 **검열 해제를 요청 단위로 실시간 전환**한다.
 
