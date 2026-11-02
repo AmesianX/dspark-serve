@@ -1,0 +1,23 @@
+[Unit]
+Description=DSpark encrypt gateway (uvicorn :8443, AES body-decrypt in front of vLLM)
+Documentation=file:///home/user/work/dspark-serve/run-gateway.sh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=user
+WorkingDirectory=/home/user/work/dspark-serve
+# run-gateway.sh 가 export 하던 값들을 그대로 옮김
+Environment=LLAMACPP_AES_KEY=jCuJ9cvYtgXbl/Tp5zWBOXIJI02c3Bw3a0NN03XPp9E=
+Environment=VLLM_UPSTREAM=http://127.0.0.1:8000
+ExecStart=/home/user/.local/bin/uvicorn encrypt_gateway:app --host 0.0.0.0 --port 8443
+# 죽으면 무조건 몇 초 내 자동 복구 (nohup 방치 문제 해결)
+Restart=always
+RestartSec=2
+# 로그는 journald 로 (journalctl -u dspark-gateway -f)
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

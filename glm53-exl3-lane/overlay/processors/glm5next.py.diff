@@ -1,0 +1,214 @@
+--- glm5next.py.orig	2026-10-30 11:28:39.833955424 +0900
++++ glm5next.py	2026-10-30 19:18:49.094571731 +0900
+@@ -45,6 +45,94 @@
+ 
+ logger = logging.get_logger(__name__)
+ 
++# [ours] 2026-10-30 전처리 픽셀 텐서 dtype 게이트 (VISION.md §10).
++#
++# 전처리는 rescale/normalize 를 fp32 로 계산해서 fp32 텐서를 내놓지만, 비전
++# 타워는 받는 즉시 bf16 으로 내린다(glm4_1v.py:1890 `.type(self.visual.dtype)`,
++# glm5next/nvidia/multimodal.py:567; 타워 웨이트는 이 fp8 체크포인트에서도
++# BF16 — model.py 의 quant_config=None 주석 참조).
++#
++# 그 사이 경로에는 산술이 하나도 없다: view / permute / reshape / cat 과
++# MultiModalFieldConfig.batched 의 cat·슬라이싱(glm4_1v.py:2052)뿐이고 전부
++# 비트 보존이다. 따라서 반올림을 reshape 직후로 앞당겨도 반올림은 여전히
++# fp32->bf16 한 번이고 결과는 비트 동일하다. 산술 정밀도는 fp32 로 그대로
++# 둔다 — 바꾸는 건 출력 dtype 뿐.
++#
++# ⚠️ 캐스팅 위치가 전부다. 최종 `torch.cat(...)` **뒤**에 캐스팅하면 fp32
++# 전체 사본과 bf16 전체가 동시에 살아서 피크가 오히려 커진다(실측: 41.6 ->
++# 50.7 MiB/장). 그룹 루프 안에서 reshape 직후에 내려야 fp32 사본이 cat 전에
++# 해제되고 cat 자체가 bf16 으로 일어난다(실측: 42.3 -> 21.8 MiB/장, -48%).
++#
++# 동기: 프런트엔드 전처리 피크는 이미지 장수x픽셀에 비례하고(첫 요청 뒤 GPU ViT 작업공간
++# ~1.9 GiB 는 별도 고정비), memwatch 3GB 바닥까지의 여유가 장수 상한을 결정한다(VISION.md §8, §11).
++#
++# fp16 은 일부러 넣지 않았다: fp32->fp16->bf16 은 이중 반올림이라 단일
++# 반올림과 값이 갈릴 수 있다(= 비트 동일이 아니다).
++_MM_PIXEL_DTYPES = {
++    "fp32": None,  # 업스트림 그대로
++    "float32": None,
++    "bf16": torch.bfloat16,
++    "bfloat16": torch.bfloat16,
++}
++_MM_PIXEL_DTYPE_NAME = os.environ.get("GLM53_MM_PIXEL_DTYPE", "fp32").strip().lower()
++if _MM_PIXEL_DTYPE_NAME not in _MM_PIXEL_DTYPES:
++    raise ValueError(
++        f"GLM53_MM_PIXEL_DTYPE={_MM_PIXEL_DTYPE_NAME!r} 를 모른다. "
++        f"가능한 값: {sorted(_MM_PIXEL_DTYPES)}"
++    )
++_MM_PIXEL_DTYPE = _MM_PIXEL_DTYPES[_MM_PIXEL_DTYPE_NAME]
++if _MM_PIXEL_DTYPE is not None:
++    logger.info(
++        "[ours] pixel_values dtype = %s (전처리 산술은 fp32 유지, 비트 동일)",
++        _MM_PIXEL_DTYPE_NAME,
++    )
++
++
++def _mm_patch_rows(proc, im, kwargs) -> int | None:
++    """디코드 없이 이 이미지의 패치 행 수. EXIF 회전(5~8)이면 가로세로를 바꾼다(헤더만 읽음)."""
++    if not (hasattr(im, "height") and hasattr(im, "width")):
++        return None
++    h, w = im.height, im.width
++    mark = getattr(im, "_glm53_lazy", None)
++    if mark is not None:
++        # 요청이 쥔 객체에 getexif() 를 부르면 PNG 는 전체를 디코드해 그 객체에 남긴다
++        # (PngImageFile.getexif -> load). 같은 바이트로 새 객체를 열어 보고 바로 닫는다.
++        from io import BytesIO
++        from PIL import Image as _I
++        try:
++            with _I.open(BytesIO(mark[2])) as probe:
++                if probe.getexif().get(0x0112, 1) in (5, 6, 7, 8):
++                    h, w = w, h
++        except Exception:
++            return None
++    return proc.get_number_of_image_patches(h, w, kwargs)
++
++
++def _mm_alloc_out(grouped: dict, index: dict, temporal_patch_size: int, patch_size: int):
++    """최종 pixel_values 를 미리 잡고, (그룹키, 그룹내 j) -> 원래 순서의 행 범위를 돌려준다.
++    torch.cat(reorder_images(...)) 과 같은 순서·같은 모양이다."""
++    rows_of, dim = {}, None
++    for key, st in grouped.items():
++        t = st.shape[1] if st.ndim == 5 else 1
++        t += (-t) % temporal_patch_size
++        h, w = st.shape[-2:]
++        rows_of[key] = (t // temporal_patch_size) * (h // patch_size) * (w // patch_size)
++        dim = st.shape[-3] * temporal_patch_size * patch_size * patch_size
++    where, off = {}, 0
++    for i in range(len(index)):
++        key, j = index[i]
++        where[(key, j)] = (off, off + rows_of[key])
++        off += rows_of[key]
++    return torch.empty((off, dim), dtype=_MM_PIXEL_DTYPE), where
++
++
++def _mm_pixel_cast(t: torch.Tensor) -> torch.Tensor:
++    """패치 텐서를 타워 소비 dtype 으로 미리 내린다(비트 동일). cat 전에 부를 것."""
++    if _MM_PIXEL_DTYPE is None or t.dtype == _MM_PIXEL_DTYPE:
++        return t
++    return t.to(_MM_PIXEL_DTYPE)
++
++
+ # Cap video inputs at 30,000 vision tokens to keep encoder profiling from
+ # starving the KV cache. Image inputs retain their checkpoint-defined budget.
+ _MAX_VIDEO_TOKENS = 30000
+@@ -355,6 +443,52 @@
+     valid_kwargs = Glm5NextImageProcessorKwargs
+     model_input_names = ["pixel_values", "image_grid_thw"]
+ 
++    def _preprocess_image_like_inputs(self, images, *args, **kwargs) -> BatchFeature:
++        """[ours] 게이트(bf16)면 한 장씩: 텐서 변환 -> 리사이즈·패치화 -> 원본 텐서 버림.
++        업스트림은 N 장을 전부 원본 크기 텐서로 바꾼 뒤에야 리사이즈해서 피크가 원본 크기 x N 이었다.
++        CPU 전처리는 그룹핑이 꺼져 있어(이미지마다 따로 계산) 한 장씩 해도 결과는 비트 동일하다."""
++        if _MM_PIXEL_DTYPE is None:
++            return super()._preprocess_image_like_inputs(images, *args, **kwargs)
++        images = self._prepare_images_structure(images, expected_ndims=3)
++        if len(images) > 0 and isinstance(images[0], (list, tuple)):
++            return super()._preprocess_image_like_inputs(images, *args, **kwargs)
++        try:  # 지연 디코드 로더(overlay/multimodal_media/image.py)가 있으면 한 장씩 마저 디코드
++            from vllm.multimodal.media.image import finish_lazy_image
++        except ImportError:
++            finish_lazy_image = None
++        out, grids, off = None, [], 0
++        for i in range(len(images)):
++            src = images[i]
++            img = finish_lazy_image(src) if finish_lazy_image is not None else src
++            t = self.process_image(img, *args, **kwargs)
++            if img is not src:
++                # 지연 이미지에서 새로 연 디코드 객체 — 우리만 쥐고 있으니 여기서 놓는다.
++                # 요청이 쥔 원래 객체(src)는 디코드된 적이 없고 닫지 않는다.
++                img.close()
++            del img, src
++            one = self._preprocess([t], *args, **kwargs)
++            del t
++            pv = one["pixel_values"]
++            if out is None:
++                rows = [_mm_patch_rows(self, im, kwargs) for im in images[i + 1:]]
++                rows = None if any(r is None for r in rows) else [pv.shape[0]] + rows
++                out = (torch.empty((sum(rows), pv.shape[1]), dtype=pv.dtype)
++                       if rows is not None else [])
++            if isinstance(out, list):
++                out.append(pv)
++            else:
++                if pv.shape[0] != rows[i]:  # 헤더로 잰 크기와 실제가 다르면 이 요청만 거절
++                    raise ValueError(f"image {i}: patch rows {pv.shape[0]} != predicted {rows[i]}")
++                out[off : off + pv.shape[0]].copy_(pv)
++                off += pv.shape[0]
++            grids.append(one["image_grid_thw"])
++            del one, pv
++        pixel_values = torch.cat(out, dim=0) if isinstance(out, list) else out
++        return BatchFeature(
++            data={"pixel_values": pixel_values, "image_grid_thw": torch.cat(grids, dim=0)},
++            tensor_type=kwargs.get("return_tensors"),
++        )
++
+     def _preprocess(
+         self,
+         images: list[torch.Tensor],
+@@ -420,6 +554,14 @@
+         )
+         processed_images_grouped = {}
+         processed_grids = {}
++        # [ours] 게이트(bf16)면 fp32 사본을 루프에 남기지 않는다: rescale 직후 내리고(이후는 패딩
++        # repeat·view·permute·reshape 뿐인 값 이동이라 비트 동일), 결과는 미리 잡은 out 에 바로
++        # 쓴다. 이미지마다 fp32 77MB x2(@1792²)가 생겼다 힙에 남던 게 피크를 쌓았다.
++        _ours = _MM_PIXEL_DTYPE is not None
++        if _ours:
++            out, where = _mm_alloc_out(
++                grouped_images, grouped_images_index, temporal_patch_size, patch_size
++            )
+ 
+         for shape, stacked_images in grouped_images.items():
+             resized_height, resized_width = stacked_images.shape[-2:]
+@@ -432,6 +574,8 @@
+                 image_mean,
+                 image_std,
+             )
++            if _ours:
++                patches = _mm_pixel_cast(patches)
+             if patches.ndim == 4:  # (B, C, H, W)
+                 patches = patches.unsqueeze(1)  # (B, T=1, C, H, W)
+ 
+@@ -470,15 +614,23 @@
+                 channel * temporal_patch_size * patch_size * patch_size,
+             )
+ 
+-            processed_images_grouped[shape] = flatten_patches
++            if _ours:
++                for j in range(batch_size):
++                    lo, hi = where[(shape, j)]
++                    out[lo:hi].copy_(flatten_patches[j])
++            else:
++                processed_images_grouped[shape] = _mm_pixel_cast(flatten_patches)
++            del flatten_patches, patches
+             processed_grids[shape] = [[grid_t, grid_h, grid_w]] * batch_size
+ 
+-        processed_images = reorder_images(
+-            processed_images_grouped, grouped_images_index
+-        )
+         processed_grids = reorder_images(processed_grids, grouped_images_index)
+-
+-        pixel_values = torch.cat(processed_images, dim=0)
++        if _ours:
++            pixel_values = out
++        else:
++            processed_images = reorder_images(
++                processed_images_grouped, grouped_images_index
++            )
++            pixel_values = torch.cat(processed_images, dim=0)
+         image_grid_thw = torch.tensor(processed_grids)
+ 
+         return BatchFeature(
+@@ -717,7 +869,8 @@
+                 channel * temporal_patch_size * patch_size * patch_size,
+             )
+ 
+-            processed_videos_grouped[shape] = flatten_patches
++            processed_videos_grouped[shape] = _mm_pixel_cast(flatten_patches)
++            del flatten_patches, patches
+             processed_grids[shape] = [[grid_t, grid_h, grid_w]] * batch_size
+ 
+         processed_videos = reorder_videos(

@@ -1,0 +1,40 @@
+--- overlay/v2runner/model_runner.py.orig	2026-10-02 20:05:29.202680986 +0900
++++ overlay/v2runner/model_runner.py	2026-10-02 20:05:29.220681229 +0900
+@@ -1635,6 +1635,17 @@
+             )
+         return pcp.maybe_partition_pcp_batch(self.pcp_manager, input_batch)
+ 
++    def _scheduled_batch_has_prefill(self, scheduler_output: SchedulerOutput) -> bool:
++        """Whether any scheduled request is still prefilling (vllm#51865)."""
++        req_id_to_index = self.req_states.req_id_to_index
++        prefill_len = self.req_states.prefill_len.np
++        computed = self.req_states.num_computed_prefill_tokens
++        for req_id in scheduler_output.num_scheduled_tokens:
++            idx = req_id_to_index[req_id]
++            if computed[idx] < prefill_len[idx]:
++                return True
++        return False
++
+     def prepare_attn(
+         self, input_batch: InputBatch
+     ) -> tuple[tuple[torch.Tensor, ...], torch.Tensor]:
+@@ -1783,6 +1794,19 @@
+         num_toks = scheduler_output.total_num_scheduled_tokens
+         max_query_len = max(scheduler_output.num_scheduled_tokens.values())
+         uniform_tok_count = get_uniform_token_count(num_reqs, num_toks, max_query_len)
++        # [ours] backport of vllm#51865 (merged upstream 2026-08-12, after this
++        # fork's base): the shape test alone lets a prompt chunk of exactly
++        # 1 + num_speculative_tokens tokens replay the spec-verify FULL graph.
++        # On the hybrid KDA model that graph skips the prompt's recurrent state,
++        # so the last-position logits and every later decode step are NaN
++        # (sampled as token 0, '!'). A batch is uniform decode only when no
++        # scheduled request is still prefilling. Dummy runs keep the shape test.
++        if (
++            uniform_tok_count is not None
++            and not dummy_run
++            and self._scheduled_batch_has_prefill(scheduler_output)
++        ):
++            uniform_tok_count = None
+         # Per-request token bound for graph dispatch: varlen spec-decode graphs
+         # are captured for at most `max_req_tokens` tokens per request, so a
+         # batch may only replay one if its longest request fits.

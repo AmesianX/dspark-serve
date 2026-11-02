@@ -1,0 +1,13 @@
+--- overlay/v2runner/spec_mmtp/speculator.py.orig	2026-10-02 19:41:11.681243002 +0900
++++ overlay/v2runner/spec_mmtp/speculator.py	2026-10-02 19:41:11.699379827 +0900
+@@ -200,6 +200,10 @@
+             num_tokens,
+             max_query_len,
+         )
++        # [ours] backport of vllm#51865: a batch holding a prompt chunk is not a
++        # uniform decode batch even when its shape matches one.
++        if bool(input_batch.is_prefilling_np.any()):
++            uniform_token_count = None
+         batch_desc, num_tokens_across_dp = dispatch_cg_and_sync_dp(
+             self.cudagraph_manager,
+             num_reqs,

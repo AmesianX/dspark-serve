@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "glm53-ab-plugin"
+version = "0.1.0"
+description = "Runtime on/off switch for the GLM-5.3 abliteration edit"
+requires-python = ">=3.10"
+
+# Two halves, both gated by VLLM_PLUGINS (see glm53_ab_plugin.py): the worker
+# entry installs the collective_rpc methods, the endpoint entry serves /ab.
+[project.entry-points."vllm.general_plugins"]
+glm53_ab_worker = "glm53_ab_plugin:register_worker_methods"
+
+[project.entry-points."vllm.endpoint_plugins"]
+glm53_ab = "glm53_ab_plugin:Glm53AbEndpointPlugin"
+
+[tool.setuptools]
+py-modules = ["glm53_ab_plugin"]

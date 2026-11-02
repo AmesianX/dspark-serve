@@ -1,0 +1,92 @@
+--- sparse_utils.py.orig	2026-09-30 03:48:44.956309722 +0900
++++ sparse_utils.py	2026-09-30 03:48:39.347236847 +0900
+@@ -167,6 +167,10 @@
+     max_num_blocks_per_req: tl.constexpr,
+     BLOCK_SIZE: tl.constexpr,
+     BLOCK_N: tl.constexpr,  # tile width along columns
++    # LANE PATCH (2026-09-30): the real row width. BLOCK_N may be padded up to a
++    # power of two so one program can own a non-power-of-two row; columns at or
++    # past NUM_COLS are masked out (read as -1, never stored).
++    NUM_COLS: tl.constexpr,
+     HAS_PREFILL: tl.constexpr,
+     COUNT_VALID: tl.constexpr,  # whether to count valid indices
+     # BLOCK_N == NUM_TOPK_TOKENS: one program owns the row, so the valid count
+@@ -175,8 +179,11 @@
+     # When set, scatter valid slots to a contiguous prefix [0, valid_count) using
+     # valid_count_ptr as an atomic slot allocator (DCP filtering leaves interior
+     # -1 gaps; the trtllm-gen sparse kernel reads the first valid_count entries).
+-    # Requires COUNT_VALID and an out buffer pre-filled with -1. Order within the
+-    # prefix is unspecified (only the selected set matters).
++    # Requires COUNT_VALID and an out buffer pre-filled with -1.
++    # LANE PATCH (2026-09-30): the order is NOT free. The sparse-attention kernel
++    # sums the keys in prefix order and float addition is not associative, so a
++    # racing allocator makes temperature 0 irreproducible. _remap_tiling now
++    # always gives the compaction a single tile, which keeps column order.
+     COMPACT_TO_FRONT: tl.constexpr,
+     # DCP de-interleave: with DCP_SIZE == 1 these are an exact no-op
+     DCP_SIZE: tl.constexpr,
+@@ -197,13 +204,14 @@
+ 
+     # Each program covers BLOCK_N consecutive columns
+     indice_id = tile_id * BLOCK_N + tl.arange(0, BLOCK_N)
++    col_ok = indice_id < NUM_COLS
+ 
+     # Load request id for this token (no mask: grid is exact)
+     req = tl.load(req_id_ptr + token_id)
+ 
+     # Load token indices for this tile
+     ti_ptr = token_indices_ptr + token_id * ti_stride0 + indice_id * ti_stride1
+-    tok = tl.load(ti_ptr)  # int32
++    tok = tl.load(ti_ptr, mask=col_ok, other=-1)  # int32; padding reads as -1
+ 
+     # Only token == -1 should propagate as -1
+     is_invalid_tok = tok < 0
+@@ -263,7 +271,7 @@
+     else:
+         # Store results in place (input column == output column).
+         out_ptr_ij = out_ptr + token_id * out_stride0 + indice_id * out_stride1
+-        tl.store(out_ptr_ij, out_val)
++        tl.store(out_ptr_ij, out_val, mask=col_ok)
+ 
+         # Accumulate the tile's valid count into the row total; a single tile's
+         # reduction *is* the total.
+@@ -289,11 +297,18 @@
+     Returns:
+         (single_tile, block_n, tiles_per_row, num_warps)
+     """
+-    single_tile = (
+-        count_valid and triton.next_power_of_2(NUM_TOPK_TOKENS) == NUM_TOPK_TOKENS
+-    )
+-    if single_tile:
+-        return True, NUM_TOPK_TOKENS, 1, 8
++    # LANE PATCH (2026-09-30): upstream took the single tile only for
++    # power-of-two widths. GLM-5.3's kpool selector rows are 2112 wide (2048
++    # pooled + the partial tail pool, padded to 64), so they fell back to the
++    # tiled path, whose compaction reserves each tile's slice with an atomic.
++    # Which tile won decided whether the tail tokens landed first or last, and
++    # that order changed the attention sum -- measured: identical requests at
++    # temperature 0 selected the same set in a different order from decode
++    # step 0. Pad the tile to the next power of two and mask instead; the row
++    # is still one program, so the count is a plain store and the prefix keeps
++    # column order. Cost: one 4096-lane program per row instead of 33 x 64.
++    if count_valid:
++        return True, triton.next_power_of_2(NUM_TOPK_TOKENS), 1, 8
+     return False, BLOCK_N, NUM_TOPK_TOKENS // BLOCK_N, 4
+ 
+ 
+@@ -403,6 +418,7 @@
+         max_num_blocks_per_req,
+         BLOCK_SIZE,
+         block_n,
++        NUM_TOPK_TOKENS,
+         HAS_PREFILL_WORKSPACE,
+         return_valid_counts,
+         single_tile,
+@@ -546,6 +562,7 @@
+         max_num_blocks_per_req,
+         BLOCK_SIZE,
+         block_n,
++        NUM_TOPK_TOKENS,
+         False,  # HAS_PREFILL
+         count_valid,
+         single_tile,

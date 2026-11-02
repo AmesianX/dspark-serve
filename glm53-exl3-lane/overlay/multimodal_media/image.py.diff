@@ -1,0 +1,71 @@
+--- image.py.orig	2026-09-02 16:31:00.000000000 +0900
++++ image.py	2026-10-30 19:33:20.132412858 +0900
+@@ -19,6 +19,42 @@
+ MAGIC_NUMPY_PREFIX = b"\x93NUMPY"  # https://numpy.org/devdocs/reference/generated/numpy.lib.format.html#format-version-1-0
+ 
+ 
++# [ours] 2026-10-30 지연 디코드 게이트(VISION.md §12). 끄면(기본) 업스트림 그대로.
++import os as _os
++
++_GLM53_LAZY_DECODE = _os.environ.get("GLM53_MM_LAZY_DECODE", "0") == "1"
++
++
++def _png_exif_chunk(data: bytes) -> bytes:
++    """PNG 청크를 디코드 없이 훑어 eXIf 를 Pillow chunk_eXIf 형식으로. 없으면 b""."""
++    i, n = 8, len(data)
++    while i + 8 <= n:
++        length = int.from_bytes(data[i : i + 4], "big")
++        cid = data[i + 4 : i + 8]
++        if cid == b"eXIf":
++            return b"Exif\x00\x00" + data[i + 8 : i + 8 + length]
++        if cid == b"IEND":
++            break
++        i += 12 + length
++    return b""
++
++
++def finish_lazy_image(image: Image.Image) -> Image.Image:
++    """지연 로드된 이미지와 같은 바이트로 새 객체를 열어 업스트림 load_bytes 와 같은
++    정규화·디코드·모드 변환을 한다. 지연 표식이 없으면(이미 디코드된 이미지) 그대로 돌려준다."""
++    mark = getattr(image, "_glm53_lazy", None)
++    if mark is None:
++        return image
++    image_mode, rgba_bg, data = mark
++    image = normalize_image(Image.open(BytesIO(data)))  # 새 객체. 호출자는 다 쓰고 닫는다.
++    image.load()
++    if image_mode is None or image.mode == image_mode:
++        return image
++    if image.mode == "RGBA" and image_mode == "RGB":
++        return rgba_to_rgb(image, rgba_bg)
++    return convert_image_mode(image, image_mode, rgba_bg)
++
++
+ class ImageMediaIO(MediaIO[Image.Image]):
+     """Configuration values can be user-provided either by --media-io-kwargs or
+     by the runtime API field "media_io_kwargs". Ensure proper validation and
+@@ -84,6 +120,25 @@
+                     f"the maximum of {max_pixels} pixels. Set "
+                     f"VLLM_MAX_IMAGE_PIXELS to increase this limit."
+                 )
++            if _GLM53_LAZY_DECODE:
++                # [ours] 헤더만 읽고 디코드는 미룬다. 전처리기가 한 장씩
++                # finish_lazy_image() 로 같은 정규화·모드 변환을 하고 끝나면 닫는다.
++                # 요청의 N 장 원본이 동시에 디코드돼 사는 순간이 없어진다.
++                # 요청이 들고 있는 이 객체는 끝까지 디코드하지 않는다(닫지도 않는다 — vLLM 이
++                # 전처리 뒤에도 이 객체를 건드린다). 전처리는 같은 바이트로 새 객체를 연다.
++                image._glm53_lazy = (self.image_mode, self.rgba_background_color, data)
++                if image.format == "PNG" and "exif" not in image.info:
++                    # PngImageFile.getexif() 는 info 에 exif 가 없으면 전체를 디코드한다. vLLM 해시
++                    # (MultiModalHasher, getexif 로 ImageID 확인)가 이 객체에 부르므로, 디코드 없이
++                    # 청크에서 Pillow 와 같은 형식(b"Exif\0\0"+eXIf)으로 채운다. 없으면 b"".
++                    image.info["exif"] = _png_exif_chunk(data)
++                io_config = None
++                if self.image_mode is not None and image.mode != self.image_mode:
++                    io_config = {
++                        "image_mode": self.image_mode,
++                        "rgba_background_color": self.rgba_background_color,
++                    }
++                return MediaWithBytes(image, data, io_config)
+             image = normalize_image(image)
+             image.load()
+             converted = self._convert_image_mode(image)

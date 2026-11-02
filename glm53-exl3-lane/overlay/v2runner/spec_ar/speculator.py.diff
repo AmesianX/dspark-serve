@@ -1,0 +1,13 @@
+--- overlay/v2runner/spec_ar/speculator.py.orig	2026-10-02 19:41:11.680452856 +0900
++++ overlay/v2runner/spec_ar/speculator.py	2026-10-02 19:41:11.699156846 +0900
+@@ -263,6 +263,10 @@
+             num_tokens,
+             max_query_len,
+         )
++        # [ours] backport of vllm#51865: a batch holding a prompt chunk is not a
++        # uniform decode batch even when its shape matches one.
++        if bool(input_batch.is_prefilling_np.any()):
++            uniform_token_count = None
+         with record_function_or_nullcontext("vllm:v2/speculator/prefill/dispatch"):
+             rebuild_prefill_attn_metadata = getattr(
+                 self, "rebuild_prefill_attn_metadata", False

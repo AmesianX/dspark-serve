@@ -1,0 +1,92 @@
+--- glm5next/attention.py.orig	2026-09-28 16:00:22.853381906 +0900
++++ glm5next/attention.py	2026-09-28 16:02:34.393126944 +0900
+@@ -37,6 +37,8 @@
+ from vllm.v1.kv_cache_interface import KpoolTailSpec, MLAAttentionSpec
+ 
+ logger = init_logger(__name__)
++import os as _os
++_SKINNY_FP32_FIX = _os.environ.get("VLLM_EXL3_SKINNY_FP32", "0") == "1"
+ 
+ # Shared torch.compile config for the indexer's small-kernel leaves. The MLA
+ # indexer runs under breakable-CG (CompilationMode.NONE), which blocks FX-graph
+@@ -139,9 +141,64 @@
+             f"storage block, got block_size={spec.block_size} -> "
+             f"storage_block_size={storage_block_size}."
+         )
++        _check_kpool_chunk_alignment(vllm_config, self._index_kpool)
+         return spec
+ 
+ 
++def _check_kpool_chunk_alignment(vllm_config: VllmConfig, kpool: int) -> None:
++    """Refuse configurations whose prefill chunks can start mid-pool.
++
++    LANE PATCH (2026-09-28). The prefill insert (_kpool_compress_insert)
++    completes a pool only from tokens inside the current chunk and never reads
++    the tail cache, so a chunk that starts mid-pool drops the straddling pool
++    (stale bytes stay in its slot) or, for a later request in the batch, pools
++    K across the request boundary. Both stay in the top-k candidate set for
++    the rest of the request. Nothing enforces the alignment directly; it holds
++    only through the scheduler's mamba "align" split, which floors every
++    non-final prefill chunk to the block grid. That split has sub-block escape
++    hatches, so reject each one here instead of corrupting silently.
++    """
++    cache = vllm_config.cache_config
++    sched = vllm_config.scheduler_config
++    if not sched.enable_chunked_prefill:
++        return
++    problems = []
++    if cache.mamba_cache_mode != "align":
++        problems.append(
++            f"mamba_cache_mode={cache.mamba_cache_mode!r} (needs 'align', which "
++            "is the default only with prefix caching enabled)"
++        )
++    # Mirrors Scheduler._mamba_block_aligned_split: a chunk is floored to the
++    # block grid unless the effective chunk limit is below the block size.
++    # Only a positive mixed-prefill cap limits chunks (-1 skips, 0 is off).
++    limit = sched.max_num_batched_tokens
++    if sched.long_prefill_token_threshold > 0:
++        limit = min(limit, sched.long_prefill_token_threshold)
++    if sched.mixed_prefill_token_cap > 0:
++        limit = min(limit, sched.mixed_prefill_token_cap)
++    # The split floors to the Mamba block grid; take the wider of the two
++    # sizes the config knows about (block_size is already raised to the
++    # attention/Mamba page-matched size by the time KV specs are built).
++    grid = max(cache.block_size, getattr(cache, "mamba_block_size", None) or 0)
++    if limit < grid:
++        problems.append(
++            f"prefill chunk limit {limit} < block grid {grid} "
++            "(blocks wider than a chunk advance sub-block)"
++        )
++    for name, val in (
++        ("block_size", cache.block_size),
++        ("mamba_block_size", getattr(cache, "mamba_block_size", None)),
++        ("prefix_match_unit", cache.prefix_match_unit),
++    ):
++        if val is not None and val % kpool:
++            problems.append(f"{name}={val} is not a multiple of index_kpool={kpool}")
++    if problems:
++        raise ValueError(
++            "Glm5Next kpool indexer: prefill chunks are not guaranteed to "
++            "start on a pool boundary: " + "; ".join(problems)
++        )
++
++
+ class Glm5NextTailCache(DeepseekV32IndexerCache):
+     """Paged circular buffer for the kpool indexer's in-progress (tail) pool.
+ 
+@@ -350,7 +407,14 @@
+                 .contiguous()
+                 .float()
+             )
+-        weights = torch.mm(hidden_states.float(), self._wp_fp32)
++            # [ours] 2026-09-03: cuBLAS 가 [M,4096]x[4096,64] fp32 NN 에서 M=5 일 때 1블록 gemmSN
++            # 커널(90~130us)을 고른다. [64,4096]@[4096,M] 로 뒤집으면 19us(정확도 동일, fp32 그대로).
++            self._wp_fp32_nk = self._wp_fp32.t().contiguous()
++        if _SKINNY_FP32_FIX:
++            # M=1 이면 .contiguous() 가 no-op(stride(0)=1) → DeepGEMM 이 거부. clone 으로 stride 강제.
++            weights = (self._wp_fp32_nk @ hidden_states.float().t()).t().clone(memory_format=torch.contiguous_format)
++        else:
++            weights = torch.mm(hidden_states.float(), self._wp_fp32)
+ 
+         k = _fused_indexer_k_norm(
+             k, self.k_norm.weight, self.k_norm.bias, self.head_dim, self.k_norm.eps

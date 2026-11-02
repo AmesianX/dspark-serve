@@ -1,0 +1,131 @@
+--- glm5next/mtp.py.orig	2026-09-02 16:31:01.000000000 +0900
++++ glm5next/mtp.py	2026-09-27 05:19:43.456585772 +0900
+@@ -1,5 +1,6 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++import os
+ import typing
+ from collections.abc import Callable, Iterable
+ 
+@@ -7,10 +8,12 @@
+ import torch.nn as nn
+ 
+ from vllm.config import VllmConfig
++from vllm.logger import init_logger
+ from vllm.model_executor.layers.fused_moe import (
+     fused_moe_make_expert_params_mapping,
+ )
+ from vllm.model_executor.layers.layernorm import RMSNorm
++from vllm.model_executor.layers.linear import ReplicatedLinear
+ from vllm.model_executor.layers.logits_processor import LogitsProcessor
+ from vllm.model_executor.layers.vocab_parallel_embedding import (
+     VocabParallelEmbedding,
+@@ -36,6 +39,8 @@
+ from .ops.fused_eh_norm import fused_eh_norm
+ 
+ 
++logger = init_logger(__name__)
++
+ class Glm5NextMultiTokenPredictorLayer(nn.Module):
+     def __init__(self, vllm_config: VllmConfig, prefix: str) -> None:
+         super().__init__()
+@@ -46,7 +51,15 @@
+ 
+         self.enorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+         self.hnorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+-        self.eh_proj = nn.Linear(config.hidden_size * 2, config.hidden_size, bias=False)
++        if os.environ.get("VLLM_EXL3_MTP_EH_PROJ_QUANT", "0") == "1":
++            # [ours] nn.Linear 은 vLLM 양자화를 우회해 BF16 cuBLAS gemv(291us x4/스텝)로 남는다.
++            # ReplicatedLinear + quant_config 로 exl3 오버레이의 dense FP8(Marlin W8A16) 경로에 태움.
++            self.eh_proj = ReplicatedLinear(
++                config.hidden_size * 2, config.hidden_size, bias=False,
++                quant_config=quant_config, prefix=f"{prefix}.eh_proj",
++            )
++        else:
++            self.eh_proj = nn.Linear(config.hidden_size * 2, config.hidden_size, bias=False)
+ 
+         # Reserve room for the incomplete pool tail and align the sparse MLA
+         # buffer width to BLOCK_N=128 (FlashInfer lane) or 64 (B12X GLM_NEXT,
+@@ -106,6 +119,8 @@
+             self.enorm.variance_epsilon,
+         )
+         hidden_states = self.eh_proj(eh_input)
++        if isinstance(hidden_states, tuple):  # [ours] ReplicatedLinear returns (out, bias)
++            hidden_states = hidden_states[0]
+         # Fuse the residual add and final RMSNorm. Glm5NextMoE already performs
+         # its all-reduce, so no collective is needed here. The post-norm result
+         # feeds both draft logits and the next recycled hidden state.
+@@ -119,6 +134,23 @@
+         return hidden_states, hidden_states
+ 
+ 
++class _DraftHeadProxy:
++    """[ours] ParallelLMHead 의 get_top_tokens 표면(tp_size/shard_indices/quant_method)만 흉내."""
++
++    def __init__(self, head, int4_method):
++        self._head = head
++        self.tp_size = head.tp_size
++        self.shard_indices = head.shard_indices
++        self.quant_method = int4_method
++
++    def __getattr__(self, name):
++        # [ours] 흉내 내지 않은 속성은 원래 lm_head 로 위임: 이미지가 바뀌어 logits_processor 가 다른
++        # 속성(org_vocab_size 등)을 읽어도 드래프트 경로가 AttributeError 로 죽지 않게.
++        if name == "_head":
++            raise AttributeError(name)
++        return getattr(self._head, name)
++
++
+ class Glm5NextMultiTokenPredictor(nn.Module):
+     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
+         super().__init__()
+@@ -151,6 +183,7 @@
+             assert isinstance(self_attn, Glm5NextMLAAttention)
+             self._mtp_mla_attns.append(self_attn.mla_attn)
+         self.logits_processor = LogitsProcessor(config.vocab_size)
++        self._int4_head_proxies: dict[int, "_DraftHeadProxy"] = {}
+ 
+     def set_prefill_output_indices(self, output_indices: torch.Tensor | None) -> None:
+         """Select request-tail outputs after populating all MTP attention caches."""
+@@ -202,7 +235,27 @@
+         # hidden_states is already post-final-norm (produced in the layer
+         # forward and recycled as-is); apply the LM head only, without a
+         # second RMSNorm.
+-        return self.logits_processor(mtp_layer.shared_head.head, hidden_states)
++        # [ours] 이 compute_logits 는 드래프트 전용(V2 autoregressive speculator 의 sample_draft 가
++        # 부른다; verify 는 본 모델 compute_logits). 축소 어휘 드래프트 헤드가 있으면 그것으로.
++        return self.logits_processor(self._draft_head(mtp_layer.shared_head.head), hidden_states)
++
++    def _draft_head(self, head):
++        """[ours] 드래프트용 헤드: subset(축소 어휘) > int4 > 원본 순. 없으면 원본 그대로."""
++        alt = getattr(head, "subset_draft_head", None) or getattr(head, "int4_draft_head", None)
++        if alt is None:
++            if os.environ.get("VLLM_GLM53_DRAFT_VOCAB") and not getattr(self, "_warned_no_subset", False):
++                self._warned_no_subset = True
++                logger.warning(
++                    "[ours] VLLM_GLM53_DRAFT_VOCAB is set but the MTP head has no subset draft "
++                    "head — drafting with the full-vocab lm_head (check the exl3 lm_head prefix gate; "
++                    "the MTP shared_head.head is the target lm_head after load_eagle_model)."
++                )
++            return head
++        proxy = self._int4_head_proxies.get(id(head))
++        if proxy is None:
++            proxy = _DraftHeadProxy(head, alt)
++            self._int4_head_proxies[id(head)] = proxy
++        return proxy
+ 
+     def get_top_tokens(
+         self,
+@@ -217,9 +270,9 @@
+         # step. Tie-breaking matches the full argmax (shards are contiguous
+         # and rank-ordered, so the lowest-rank winner is the lowest global
+         # index), so greedy draft tokens are unchanged.
+-        return self.logits_processor.get_top_tokens(
+-            mtp_layer.shared_head.head, hidden_states
+-        )
++        head = mtp_layer.shared_head.head
++        # [ours] 드래프트 헤드 교체(_draft_head). 주의: V2 speculator 는 이 함수가 아니라 compute_logits 를 부른다.
++        return self.logits_processor.get_top_tokens(self._draft_head(head), hidden_states)
+ 
+ 
+ class Glm5NextMTP(nn.Module, DeepseekV2MixtureOfExperts):

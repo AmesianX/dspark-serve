@@ -1,0 +1,74 @@
+--- sched/scheduler.py.orig	2026-10-22 18:05:38.788688998 +0900
++++ sched/scheduler.py	2026-10-24 11:03:04.903688970 +0900
+@@ -385,6 +385,23 @@
+             self.need_mamba_block_aligned_split
+             and self.hash_block_size < self.block_size
+         )
++        # EAGLE/MTP drops one hash unit off every fine attention hit, so a
++        # tail state registered at the prompt's last hash boundary is never
++        # reachable: the reconciled hit falls back to the previous mamba block
++        # boundary (up to one full block of replay per warm turn). Register
++        # the tail one hash unit earlier, where the dropped hit lands. DFlash
++        # opts out of the drop (mamba_eagle_skip_backoff) and keeps the
++        # original boundary.
++        self.mamba_partial_tail_backoff = (
++            self.hash_block_size
++            if self.mamba_partial_cache_hit
++            and self.use_eagle
++            and not self.mamba_eagle_skip_backoff
++            else 0
++        )
++        for manager in self.kv_cache_manager.coordinator.single_type_managers:
++            if hasattr(manager, "partial_tail_backoff"):
++                manager.partial_tail_backoff = self.mamba_partial_tail_backoff
+ 
+         # Counts of non-empty steps scheduled / processed. update_from_output
+         # is called once per scheduled step in FIFO order, so these stay in sync.
+@@ -503,6 +520,7 @@
+         next_block_boundary = (start // block_size + 1) * block_size
+         tail_boundary = (
+             request.num_prompt_tokens // self.hash_block_size * self.hash_block_size
++            - self.mamba_partial_tail_backoff
+             if self.mamba_partial_cache_hit
+             else 0
+         )
+@@ -708,6 +726,16 @@
+                 else:
+                     mixed_prefill_chunk_cap = mixed_prefill_cap
+ 
++        # [upstream #57951] `long_prefill_token_threshold` exists to stop a long
++        # prefill from starving other requests of the token budget. When it is
++        # the only request there is nobody to starve, so let it use the whole
++        # budget.
++        long_prefill_token_threshold = (
++            self.scheduler_config.long_prefill_token_threshold
++            if len(self.running) + len(self.waiting) + len(self.skipped_waiting) > 1
++            else 0
++        )
++
+         # First, schedule the RUNNING requests.
+         req_index = 0
+         while req_index < len(self.running) and token_budget > 0:
+@@ -752,8 +780,8 @@
+                 + request.num_output_placeholders
+                 - request.num_computed_tokens
+             )
+-            if 0 < self.scheduler_config.long_prefill_token_threshold < num_new_tokens:
+-                num_new_tokens = self.scheduler_config.long_prefill_token_threshold
++            if 0 < long_prefill_token_threshold < num_new_tokens:
++                num_new_tokens = long_prefill_token_threshold
+             mixed_chunk_capped = (
+                 request.is_prefill_chunk
+                 and 0 < mixed_prefill_chunk_cap < num_new_tokens
+@@ -1157,9 +1185,8 @@
+                             break
+                         pad_spec_decode = True
+ 
+-                    threshold = self.scheduler_config.long_prefill_token_threshold
+-                    if 0 < threshold < num_new_tokens:
+-                        num_new_tokens = threshold
++                    if 0 < long_prefill_token_threshold < num_new_tokens:
++                        num_new_tokens = long_prefill_token_threshold
+ 
+                     mixed_chunk_capped = (
+                         0 < mixed_prefill_chunk_cap < num_new_tokens

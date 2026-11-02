@@ -1,0 +1,22 @@
+--- single_type_kv_cache_manager.py.orig	2026-09-02 16:31:00.000000000 +0900
++++ single_type_kv_cache_manager.py	2026-10-22 17:45:06.798773630 +0900
+@@ -1466,6 +1466,10 @@
+             # into a private cow_block; we record that block for connector
+             # offload (see _pending_partial_tail_offloads).
+             self._producer_partial_tail_reqs: dict[str, int] = {}
++            # Tokens to register the producer tail below the prompt's last
++            # hash boundary; set by the scheduler (one hash unit under
++            # EAGLE/MTP, else 0).
++            self.partial_tail_backoff: int = 0
+             # Hash-cached boundary-state blocks freed while the request was
+             # still running, re-aged at retirement so they are not the pool's
+             # first eviction candidates (entries: block, hash, prefix tokens).
+@@ -1937,7 +1941,7 @@
+             return None
+         latest_prompt_hash_boundary = (
+             request.num_prompt_tokens // hash_block_size
+-        ) * hash_block_size
++        ) * hash_block_size - getattr(self, "partial_tail_backoff", 0)
+         if num_tokens != latest_prompt_hash_boundary:
+             return None
+ 

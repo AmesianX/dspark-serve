@@ -1,0 +1,57 @@
+--- gpu_sampler.py.orig	2026-09-28 16:00:22.854693877 +0900
++++ gpu_sampler.py	2026-09-28 16:00:28.799706533 +0900
+@@ -29,6 +29,16 @@
+ from vllm.v1.worker.gpu.states import RequestState
+ 
+ 
++
++def _utf8_guard(device, vocab_size):
++    """The lane's UTF-8 byte guard, or None when not installed/enabled."""
++    try:
++        from vllm_utf8_guard import get_guard
++    except Exception:
++        return None
++    return get_guard(device, vocab_size)
++
++
+ class Sampler:
+     def __init__(
+         self,
+@@ -179,6 +189,21 @@
+         expanded_local_pos: torch.Tensor,
+         skip_top_k_top_p: bool = False,
+     ) -> torch.Tensor:
++        # LANE PATCH (2026-09-14) — UTF-8 byte guard. See UTF8-GUARD.md.
++        #
++        # Placed above the early return on purpose: no request "asks" for this,
++        # it is a well-formedness floor under every request. Both callers land
++        # here — ordinary decode, and the MTP draft verification in
++        # gpu/spec_decode/rejection_sampler.py, which passes the draft tokens as
++        # `input_ids` — so one insertion covers speculative decoding too, which
++        # is where nearly every token of this deployment is actually chosen.
++        #
++        # input_ids holds each row's PRECEDING token, already on device, so the
++        # mask is one gather plus one masked_fill with no host synchronisation.
++        _guard = _utf8_guard(logits.device, logits.shape[-1])
++        if _guard is not None:
++            logits = _guard.apply_v2(logits, input_ids)
++
+         if not np.any(self.needs_logits_processing[idx_mapping_np]):
+             return logits
+ 
+@@ -218,6 +243,15 @@
+             input_ids,
+             expanded_local_pos,
+         )
++        # LANE PATCH (2026-09-28) — the budget kernel writes 1e9 over the end
++        # marker without looking at the guard's -inf, so a budget that runs out
++        # right after a lead byte forced the marker mid-character and orphaned
++        # the byte (U+FFFD). Re-apply the guard: at a character boundary the
++        # marker is legal and still wins; mid-character it is masked again, the
++        # character completes, and the budget (checked with >=) forces the
++        # marker on the next step.
++        if _guard is not None:
++            logits = _guard.apply_v2(logits, input_ids)
+ 
+         # Apply temperature in place.
+         self.sampling_states.apply_temperature(

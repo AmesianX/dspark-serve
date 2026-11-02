@@ -1,0 +1,5 @@
+[vllm.endpoint_plugins]
+glm53_ab = glm53_ab_plugin:Glm53AbEndpointPlugin
+
+[vllm.general_plugins]
+glm53_ab_worker = glm53_ab_plugin:register_worker_methods

@@ -1,0 +1,41 @@
+# 대용량 빌드 산출물 / 캐시 — 절대 커밋 금지
+# (인라인 주석 금지: 패턴은 반드시 단독 줄에)
+
+# ~50GB cutlass 빌드 트리
+build-recon/
+
+# JIT/triton/inductor 캐시
+cache/
+
+# 런타임 상태 (프로세스별로 바뀜)
+gateway.pid
+*.log
+
+# 파이썬 캐시
+__pycache__/
+*.pyc
+*.pyo
+
+# 스크립트 수정 전 백업본 — 로컬 안전장치이지 이력이 아니다. 이력은 git 이 갖는다.
+*.bak.*
+*.bak
+*.bak-*
+legacy-dsv4-build/
+image-archive/
+
+# 런타임 캐시 (triton/inductor/JIT) — 레인·attic 어디에 있든
+cache-*/
+# 오프라인 재구성 재료(이미지 tar·웨이트 하드링크, 172G) — 양노드 로컬 보존, git 아님
+glm53-materials/
+# 킷 tarball (디렉터리 형태 킷은 추적)
+*.tar.gz
+*.tar.gz.sha256
+# 외부 상류 저장소 클론 (Entrpi / MiaAI-Lab) — 자체 git, 여기 섞지 않음
+glm53-entrpi-kit/
+glm53-exl3-kit/
+# 컴파일 산출물 (소스 csrc/ 는 추적 — 재빌드 가능)
+build/
+*.o
+*.so
+.ninja_*
+*.egg-info/

@@ -1,0 +1,38 @@
+diff -ruN -x __pycache__ b12x.orig/moe/_shared/kernels/w4a16/kernel.py b12x/moe/_shared/kernels/w4a16/kernel.py
+--- b12x.orig/moe/_shared/kernels/w4a16/kernel.py	2026-09-02 16:31:46.000000000 +0900
++++ b12x/moe/_shared/kernels/w4a16/kernel.py	2026-09-03 09:49:48.838148959 +0900
+@@ -396,7 +396,14 @@
+         # barrier participant count while still covering the machine for the
+         # I_tp=1024 GEMMs. The split-K persistent loop is grid_x-agnostic, so this
+         # is numerically identical.
+-        blocks_per_sm_limit = 1
++        # [ours] GB10(48 SM): 1 CTA/SM = 8 warps/SM(12.5% 점유). 188-SM 기계 기준 튜닝이라
++        # 소형 SM 수에선 in-flight 로드가 부족. B12X_W4A16_M8_BLOCKS_PER_SM=N 으로 풀되
++        # 레지스터/smem 자원 한계(blocks_per_sm_limit) 안에서만 — 협력 그리드는 전 CTA 상주 필수.
++        _m8_env = os.environ.get("B12X_W4A16_M8_BLOCKS_PER_SM", "")
++        if _m8_env:
++            blocks_per_sm_limit = max(min(int(_m8_env), int(blocks_per_sm_limit)), 1)
++        else:
++            blocks_per_sm_limit = 1
+     elif cta_m_blocks == 1:
+         blocks_per_sm_limit = max(min(blocks_per_sm_limit, 4), 1)
+     else:
+diff -ruN -x __pycache__ b12x.orig/moe/_shared/kernels/w4a16/mixed_trellis.py b12x/moe/_shared/kernels/w4a16/mixed_trellis.py
+--- b12x.orig/moe/_shared/kernels/w4a16/mixed_trellis.py	2026-09-02 16:31:46.000000000 +0900
++++ b12x/moe/_shared/kernels/w4a16/mixed_trellis.py	2026-09-27 10:14:15.131455302 +0900
+@@ -795,6 +795,7 @@
+     route_ids_dtype: torch.dtype = torch.int32,
+     broadcast_suh: bool = False,
+     broadcast_svh: bool = False,
++    swiglu_limit: float | None = None,  # [ours] forwarded to W4A16FusedMoeKernel; None = no clamp
+ ) -> MixedTrellisCompileResult:
+     if route_ids_dtype not in (torch.int32, torch.int64):
+         raise TypeError("mixed Trellis route IDs must be int32 or int64")
+@@ -819,6 +820,7 @@
+             num_experts=num_experts,
+             top_k=top_k,
+             activation="silu",
++            swiglu_limit=swiglu_limit,  # [ours]
+             apply_router_weight_on_input=False,
+             zero_fc2_output=False,
+             fc1_tile_n=fc1_tile_n,

@@ -1,0 +1,16 @@
+--- scatter_states.py.orig	2026-09-02 16:31:01.000000000 +0900
++++ scatter_states.py	2026-09-28 16:10:27.173628531 +0900
+@@ -29,6 +29,13 @@
+         tl.extra.cuda.gdc_launch_dependents()
+ 
+     state_idx = tl.load(indices_ptr + batch_idx * stride_indices).to(tl.int64)
++    # LANE PATCH (2026-09-28): skip the reserved null block (0) and padding
++    # (<0), the NULL_BLOCK convention the FLA recurrent and conv kernels
++    # already follow. Capture dummy runs fill block tables with 0, and the
++    # null block's raw page is shared with the MLA cache, whose masked top-k
++    # candidates read it; state bytes there reinterpret as e4m3 NaN.
++    if state_idx <= 0:
++        return
+     values = tl.load(src_ptr + batch_idx * stride_src_batch + offsets, mask=mask)
+     tl.store(state_ptr + state_idx * stride_state_batch + offsets, values, mask=mask)
+ 

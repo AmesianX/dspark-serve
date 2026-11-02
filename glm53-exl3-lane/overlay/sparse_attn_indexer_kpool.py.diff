@@ -1,0 +1,177 @@
+--- sparse_attn_indexer_kpool.py.orig	2026-09-29 02:06:19.963470682 +0900
++++ sparse_attn_indexer_kpool.py	2026-09-30 04:21:47.706261089 +0900
+@@ -15,6 +15,7 @@
+ from vllm.logger import init_logger
+ from vllm.model_executor.custom_op import CustomOp
+ from vllm.platforms import current_platform
++from vllm.triton_utils import tl, triton
+ 
+ if TYPE_CHECKING:
+     from vllm.models.glm5next.nvidia.ops import kpool_compress as kpool_ops
+@@ -69,6 +70,120 @@
+             _PERSISTENT_TOPK_OP = torch.ops._C.persistent_topk
+     return _PERSISTENT_TOPK_OP
+ 
++
++# LANE PATCH (2026-09-30): deterministic top-k selection.
++#
++# Both CUDA top-k kernels used here (persistent_topk for decode,
++# top_k_per_row_prefill for prefill) claim output slots with shared-memory
++# atomics once a row holds more candidates than k (512 pools = 2048 tokens):
++# the selected SET comes back in an order that changes from run to run, and
++# values tied exactly at the cut are admitted first-come-first-served, so even
++# the set can change. Sparse MLA sums the keys in selection order and float
++# addition is not associative, so temperature 0 stopped being reproducible at
++# precisely 2,048 tokens of context (measured: three runs bit-identical up to
++# context 2,051, first logprob difference at 2,052).
++#
++# The fast kernels still do the hard part -- finding the k-th largest value t,
++# which is well defined regardless of ties. This kernel then re-selects each
++# row in ascending index order: every logit > t, plus the lowest-index logits
++# == t until k are taken. That is the same rule torch.topk uses (radix-select
++# the threshold, then a stable gather), with no atomics, so both the set and
++# the order are fixed. Rows with <= k candidates were already written in
++# ascending order by the trivial path and come out unchanged.
++@triton.jit
++def _canonical_topk_kernel(
++    logits_ptr,
++    logits_s0,
++    logits_s1,
++    starts_ptr,  # int32 [rows] first valid column (prefill), unused for decode
++    ends_ptr,  # int32 [rows] end column (prefill) or valid length (decode)
++    topk_ptr,  # int32 [rows, K], rewritten in place
++    topk_s0,
++    row_bound,
++    K: tl.constexpr,
++    BLOCK: tl.constexpr,
++    HAS_STARTS: tl.constexpr,
++):
++    row = tl.program_id(0).to(tl.int64)
++    if HAS_STARTS:
++        start = tl.load(starts_ptr + row)
++        length = tl.load(ends_ptr + row) - start
++    else:
++        start = 0
++        length = tl.load(ends_ptr + row)
++    length = tl.minimum(tl.maximum(length, 0), row_bound)
++    lrow = logits_ptr + row * logits_s0
++    orow = topk_ptr + row * topk_s0
++
++    # Threshold = smallest selected logit. Every read of the old selection
++    # feeds this reduction, so the barrier after it orders them before the
++    # in-place rewrite below.
++    ks = tl.arange(0, K)
++    sel = tl.load(orow + ks)
++    sel_val = tl.load(
++        lrow + (start + sel).to(tl.int64) * logits_s1,
++        mask=sel >= 0,
++        other=float("inf"),
++    )
++    thr = tl.min(sel_val, axis=0)
++    thr = tl.where(length > K, thr, float("-inf"))
++    tl.debug_barrier()
++
++    n_above = tl.full((), 0, tl.int32)
++    for off in range(0, length, BLOCK):
++        cols = off + tl.arange(0, BLOCK)
++        m = cols < length
++        v = tl.load(lrow + (start + cols).to(tl.int64) * logits_s1, mask=m, other=0.0)
++        n_above += tl.sum(((v > thr) & m).to(tl.int32), axis=0)
++    ties_left = K - n_above
++
++    written = tl.full((), 0, tl.int32)
++    ties_seen = tl.full((), 0, tl.int32)
++    for off in range(0, length, BLOCK):
++        cols = off + tl.arange(0, BLOCK)
++        m = cols < length
++        v = tl.load(lrow + (start + cols).to(tl.int64) * logits_s1, mask=m, other=0.0)
++        tie = ((v == thr) & m).to(tl.int32)
++        tie_rank = ties_seen + tl.cumsum(tie, axis=0) - tie
++        take = (((v > thr) & m) | ((tie == 1) & (tie_rank < ties_left))).to(tl.int32)
++        pos = written + tl.cumsum(take, axis=0) - take
++        tl.store(orow + pos, cols, mask=take == 1)
++        written += tl.sum(take, axis=0)
++        ties_seen += tl.sum(tie, axis=0)
++    tl.store(orow + ks, -1, mask=ks >= written)
++
++
++def _canonicalize_topk_(
++    logits: torch.Tensor,
++    topk: torch.Tensor,
++    ends: torch.Tensor,
++    starts: torch.Tensor | None,
++    row_bound: int,
++) -> None:
++    """Rewrite ``topk`` in place to the deterministic top-k (see kernel)."""
++    rows, k = topk.shape
++    if rows == 0:
++        return
++    assert topk.dtype == torch.int32 and topk.stride(1) == 1
++    assert ends.dtype == torch.int32 and ends.is_contiguous() and ends.numel() >= rows
++    assert k & (k - 1) == 0, "k must be a power of two"
++    _canonical_topk_kernel[(rows,)](
++        logits,
++        logits.stride(0),
++        logits.stride(1),
++        starts if starts is not None else ends,
++        ends,
++        topk,
++        topk.stride(0),
++        int(row_bound),
++        K=k,
++        # GB10 sweep (5 rows): 4096/8 warps = 9.7 / 20.4 / 125 us at 2K / 16K /
++        # 131K pools, vs 11.3 / 35.1 / 254 us for 1024/4.
++        BLOCK=4096,
++        HAS_STARTS=starts is not None,
++        num_warps=8,
++    )
++
+ # MXFP4 layout: 2 values packed per byte, ue8m0 (1-byte) scale per block of 32.
+ MXFP4_BLOCK_SIZE = 32
+ 
+@@ -621,6 +736,14 @@
+                     logits.stride(1),
+                     select_k,
+                 )
++                if current_platform.is_cuda():
++                    _canonicalize_topk_(
++                        logits,
++                        topk_dst,
++                        chunk.cu_seqlen_ke,
++                        chunk.cu_seqlen_ks,
++                        logits.shape[1],
++                    )
+ 
+             if index_kpool > 1:
+                 pool_ids = pool_topk.to(torch.int64)
+@@ -865,13 +988,29 @@
+             (topk_workspace,) = workspace_manager.get_simultaneous(
+                 ((RADIX_TOPK_WORKSPACE_SIZE,), torch.uint8),
+             )
++            # LANE PATCH (2026-09-28): logits and seq_lens here are
++            # pool-granular; the builder puts the pool-granular width in
++            # decode_metadata.max_seq_len. The token-granular
++            # attn_metadata_narrowed.max_seq_len declared kpool x the width.
++            topk_max_len = (
++                decode_metadata.max_seq_len
++                if decode_metadata.max_seq_len is not None
++                else logits.shape[1]
++            )
+             _persistent_topk_op()(
+                 logits,
+                 seq_lens,
+                 topk_dst,
+                 topk_workspace,
+                 select_k,
+-                attn_metadata_narrowed.max_seq_len,
++                topk_max_len,
++            )
++            _canonicalize_topk_(
++                logits,
++                topk_dst,
++                seq_lens.reshape(-1),
++                None,
++                min(logits.stride(0), topk_max_len),
+             )
+         else:
+             if current_platform.is_xpu():

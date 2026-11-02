@@ -1,0 +1,49 @@
+--- glm5next/model.py.orig	2026-09-03 01:58:26.466136379 +0900
++++ glm5next/model.py	2026-09-27 00:08:11.053197619 +0900
+@@ -4,6 +4,7 @@
+ from collections.abc import Iterable
+ from typing import ClassVar, Literal
+ 
++import os
+ import torch
+ from torch import nn
+ 
+@@ -261,12 +262,21 @@
+         if self.is_sequence_parallel and not already_sequence_parallel:
+             hidden_states = sequence_parallel_chunk(hidden_states)
+ 
+-        # The router is always external (self.gate); main's MoERunner expects
+-        # pre-computed router_logits, so compute them here unconditionally.
+-        router_logits, _ = self.gate(hidden_states)
+-        final_hidden_states = self.experts(
+-            hidden_states=hidden_states, router_logits=router_logits
+-        )
++        # LANE PATCH (2026-09-27) — router GEMM ran twice per MoE layer.
++        # self.gate is handed to FusedMoEFactory, so the MoERunner applies it
++        # itself in _forward_impl and overwrites whatever router_logits we pass;
++        # computing them here too was discarded work on every MoE layer (main
++        # model and the MTP block, which reuses this class). Same pattern as
++        # upstream qwen3_moe / deepseek_v2: let the runner own the gate.
++        if self.experts.is_internal_router:
++            final_hidden_states = self.experts(
++                hidden_states=hidden_states, router_logits=hidden_states
++            )
++        else:
++            router_logits, _ = self.gate(hidden_states)
++            final_hidden_states = self.experts(
++                hidden_states=hidden_states, router_logits=router_logits
++            )
+ 
+         if self.is_sequence_parallel and not already_sequence_parallel:
+             final_hidden_states = tensor_model_parallel_all_gather(
+@@ -328,7 +338,9 @@
+                 kv_lora_rank=config.kv_lora_rank,
+                 max_position_embeddings=config.max_position_embeddings,
+                 cache_config=cache_config,
+-                quant_config=None,  # MLA projections are BF16 in checkpoint
++                # [ours] VLLM_EXL3_DENSE_FP8=1 이면 quant_config 를 통과시켜 exl3.py 가
++                # 비-EXL3 선형층을 온라인 블록FP8 로 라우팅하게 한다(딥식이 dense 와 동일).
++                quant_config=(quant_config if os.environ.get("VLLM_EXL3_DENSE_FP8", "0") == "1" else None),
+                 prefix=f"{prefix}.self_attn",
+                 topk_indices_buffer=topk_indices_buffer,
+                 skip_rope=config.mla_nope,

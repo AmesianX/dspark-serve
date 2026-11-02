@@ -1,0 +1,28 @@
+--- b12x_mla_sparse.py.orig	2026-09-02 16:31:00.000000000 +0900
++++ b12x_mla_sparse.py	2026-09-28 16:03:17.656257919 +0900
+@@ -2655,7 +2655,24 @@
+         slots = owner * int(padded_tokens) + rank_start + local_pos
+ 
+         k_scale = getattr(layer, "_k_scale", None)
+-        if self._kv_fp8_rope:
++        if self._is_glm_next:
++            # LANE PATCH (2026-09-28): the gathered buffer holds GLM5Next
++            # records (self._kv_record_bytes, zero-width RoPE). Write it with
++            # the same writer do_kv_cache_update uses; the V3.2
++            # concat_and_cache_mla below lays out 656-byte records.
++            if self._glm_next_nvfp4:
++                self._concat_and_cache_nvfp4_mla_fp8_rope(
++                    kv_c,
++                    k_pe_flat.reshape(kv_c.shape[0], 0),
++                    gathered_buffer,
++                    slots,
++                    k_scale,
++                    per_token_scale=True,
++                )
++            else:
++                assert self._concat_and_cache_glm_next_mla is not None
++                self._concat_and_cache_glm_next_mla(kv_c, gathered_buffer, slots)
++        elif self._kv_fp8_rope:
+             if self._nvfp4_dynamic_scale:
+                 self._concat_and_cache_nvfp4_mla_fp8_rope(
+                     kv_c,

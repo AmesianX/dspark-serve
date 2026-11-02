@@ -1,0 +1,420 @@
+--- exl3.py.orig	2026-09-03 01:58:26.469041766 +0900
++++ exl3.py	2026-09-27 10:24:11.663681143 +0900
+@@ -342,6 +342,225 @@
+     )
+ 
+ 
++
++# [ours] 2026-09-03 프리필 BF16 이중경로: Marlin W8A16 은 큰 M(프리필)에서 cuBLAS BF16 보다 느리다(12k 프리필 -12%).
++#  M > VLLM_EXL3_PREFILL_BF16_MIN_M 이면 Marlin 패킹 FP8 을 역변환·dequant 해 BF16 cuBLAS 로, 작은 M(디코드)은 Marlin 그대로.
++#  역변환 근거: marlin_utils_test.marlin_weights(16x16 타일 재배열 → 1024단위 perm → 4바이트 팩)의 정확한 역, 스케일은
++#  get_scale_perms 의 64단위 역순열 + fp8_fused_exponent_bias(bf16=2^120) 제거. 상주 메모리 0(호출 때마다 풀고 버림).
++_MARLIN_UNPACK_CACHE: dict = {}
++
++
++def _marlin_fp8_inv_perms(device):
++    key = str(device)
++    if key not in _MARLIN_UNPACK_CACHE:
++        from vllm.model_executor.layers.quantization.utils.marlin_utils import get_scale_perms
++        from vllm.model_executor.layers.quantization.utils.marlin_utils_test import get_weight_perm
++        perm = get_weight_perm(8).to(torch.long)
++        inv_w = torch.empty_like(perm)
++        inv_w[perm] = torch.arange(perm.numel(), dtype=torch.long)
++        scale_perm, _ = get_scale_perms()
++        sp = torch.tensor(scale_perm, dtype=torch.long)
++        inv_s = torch.empty_like(sp)
++        inv_s[sp] = torch.arange(sp.numel(), dtype=torch.long)
++        _MARLIN_UNPACK_CACHE[key] = (inv_w.to(device), inv_s.to(device))
++    return _MARLIN_UNPACK_CACHE[key]
++
++
++def marlin_fp8_unpack(packed: torch.Tensor, padded_k: int, padded_n: int) -> torch.Tensor:
++    """gptq_marlin_repack(num_bits=8) 출력 [K/16, N*16/4] int32 → fp8 [K, N] (패딩 포함)."""
++    inv_w, _ = _marlin_fp8_inv_perms(packed.device)
++    kt = padded_k // 16
++    b = packed.contiguous().view(torch.uint8)            # [kt, N*16]: int32 j 의 byte i = 원소 4j+i
++    b = b.view(kt, -1, inv_w.numel())[:, :, inv_w]        # perm 역: src[q] = out[inv[q]]
++    b = b.reshape(kt, padded_n // 16, 16, 16)             # (n_tile, kk, nn)
++    b = b.permute(0, 2, 1, 3).reshape(padded_k, padded_n)  # (kt, kk) → K, (n_tile, nn) → N
++    return b.view(torch.float8_e4m3fn)
++
++
++def marlin_fp8_scales_unpermute(marlin_scales: torch.Tensor, padded_n: int, exp_bias: float) -> torch.Tensor:
++    """marlin_permute_scales(group 128) + exponent bias 의 역 → [K/128, N] (패딩 포함)."""
++    _, inv_s = _marlin_fp8_inv_perms(marlin_scales.device)
++    s = marlin_scales.to(torch.float32) / exp_bias
++    return s.reshape(-1, inv_s.numel())[:, inv_s].reshape(-1, padded_n)
++
++
++_TRITON_UNPACK = None
++
++
++def _get_triton_unpack():
++    global _TRITON_UNPACK
++    if _TRITON_UNPACK is None:
++        import triton
++        import triton.language as tl
++
++        @triton.jit
++        def _marlin_unpack_dequant_kernel(
++            packed_ptr, inv_ptr, scale_ptr, out_ptr, N, K, PN, stride_sk,
++            BLOCK_GROUP: tl.constexpr,
++        ):
++            # 프로그램 = 패킹 행 kt 의 1024바이트 청크 g = 출력 타일 k∈[kt*16,+16), n∈[g*64,+64)
++            kt = tl.program_id(0)
++            g = tl.program_id(1)
++            q = tl.arange(0, 1024)
++            inv = tl.load(inv_ptr + q)                                   # src[q] = out[inv[q]]
++            base = packed_ptr + kt * (PN * 16) + g * 1024
++            b = tl.load(base + inv)                                      # uint8, 1KB 창 안 gather
++            w = b.to(tl.float8e4nv, bitcast=True).to(tl.float32)
++            # q → (n_tile=q//256, kk=(q%256)//16, nn=q%16)
++            n = g * 64 + (q // 256) * 16 + (q % 16)
++            k = kt * 16 + (q % 256) // 16
++            sc = tl.load(scale_ptr + (k // BLOCK_GROUP) * stride_sk + n, mask=n < N, other=0.0)
++            val = (w * sc).to(out_ptr.dtype.element_ty)
++            tl.store(out_ptr + n.to(tl.int64) * K + k, val, mask=(n < N) & (k < K))
++
++        _TRITON_UNPACK = _marlin_unpack_dequant_kernel
++    return _TRITON_UNPACK
++
++
++def marlin_fp8_dequant_bf16_triton(layer) -> torch.Tensor:
++    """Triton 한 패스: Marlin 패킹 FP8 → BF16 [N, K]. 스케일은 [K/128, PN] 역순열본을 층에 캐시(수 MB)."""
++    from vllm.model_executor.layers.quantization.utils.marlin_utils import marlin_repacked_nk
++    n, k = layer._prefill_nk
++    padded_n, padded_k = marlin_repacked_nk(layer.weight, 8)
++    sc = getattr(layer, "_prefill_scales_kn", None)
++    if sc is None:
++        scales = getattr(layer, "weight_scale_inv", None)
++        if scales is None:
++            scales = layer.weight_scale
++        exp_bias = 2.0 ** 120 if layer.orig_dtype == torch.bfloat16 else 2.0 ** 8
++        sc = marlin_fp8_scales_unpermute(scales, padded_n, exp_bias).contiguous()   # [K/128, PN] fp32
++        layer._prefill_scales_kn = sc
++    inv_w, _ = _marlin_fp8_inv_perms(layer.weight.device)
++    out = torch.empty((n, k), dtype=layer.orig_dtype, device=layer.weight.device)
++    kern = _get_triton_unpack()
++    kern[(padded_k // 16, padded_n // 64)](
++        layer.weight.view(torch.uint8), inv_w.to(torch.int32), sc, out, n, k, padded_n, sc.stride(0),
++        BLOCK_GROUP=128, num_warps=4,
++    )
++    return out
++
++
++def marlin_fp8_dequant_bf16(layer) -> torch.Tensor:
++    """Marlin 패킹 FP8 블록 가중치 → BF16 [N, K] (layer 의 nn.Linear 레이아웃). torch 참조 구현."""
++    from vllm.model_executor.layers.quantization.utils.marlin_utils import marlin_repacked_nk
++    n, k = layer._prefill_nk
++    padded_n, padded_k = marlin_repacked_nk(layer.weight, 8)
++    w = marlin_fp8_unpack(layer.weight, padded_k, padded_n)[:k, :n].t()          # [N, K] fp8
++    scales = getattr(layer, "weight_scale_inv", None)
++    if scales is None:
++        scales = layer.weight_scale
++    exp_bias = 2.0 ** 120 if layer.orig_dtype == torch.bfloat16 else 2.0 ** 8
++    s = marlin_fp8_scales_unpermute(scales, padded_n, exp_bias)[:, :n].t()        # [N, K/128] fp32
++    kg = s.shape[1]
++    out = w.to(torch.float32).reshape(n, kg, k // kg) * s.reshape(n, kg, 1)
++    return out.reshape(n, k).to(layer.orig_dtype)
++
++# [ours] 2026-09-03 MTP 드래프트 전용 INT4(Marlin W4A16, g128) lm_head 복사본.
++#  MTP-4 는 스텝마다 lm_head 를 5회 읽고(드래프트 4 + verify 1, 각 1.46ms/노드) 8.7% 를 쓴다.
++#  드래프트의 greedy top-k 만 INT4 복사본으로 계산하고 verify 는 FP8 헤드 그대로 → 출력분포 무손실.
++#  포크의 DFlash "rowwise-fp8 draft head" 와 같은 설계. 빌드 시점 = BF16→FP8 패킹 직전(여기).
++class _Int4DraftHead:
++    def __init__(self, qweight, scales, n_local, k, device):
++        from vllm.model_executor.layers.quantization.utils.marlin_utils import (
++            marlin_make_empty_g_idx, marlin_make_workspace_new,
++        )
++        from vllm.scalar_type import scalar_types
++        self.qweight = qweight
++        self.scales = scales
++        self.n_local = int(n_local)
++        self.k = int(k)
++        self.g_idx = marlin_make_empty_g_idx(device)
++        self.g_idx_sort = marlin_make_empty_g_idx(device)
++        self.zp = marlin_make_empty_g_idx(device)
++        self.workspace = marlin_make_workspace_new(device)
++        self.wtype = scalar_types.uint4b8
++
++    def apply(self, layer, x, bias=None):
++        from vllm.model_executor.layers.quantization.utils.marlin_utils import (
++            apply_gptq_marlin_linear,
++        )
++        return apply_gptq_marlin_linear(
++            x, self.qweight, self.scales, self.zp, self.g_idx, self.g_idx_sort,
++            self.workspace, self.wtype, self.n_local, self.k, is_k_full=True, bias=bias,
++        )
++
++
++class _SubsetDraftHead:
++    """[ours] MTP 드래프트 greedy argmax 전용 축소 어휘 lm_head (FP8 W8A16 Marlin, 그룹 128 스케일).
++
++    verify(본 모델 compute_logits)는 전체 어휘 FP8 헤드 그대로 → 출력 분포 무손실. 드래프트는 이 랭크
++    어휘 조각 중 축소 어휘에 속한 행만 계산하고, 나머지 자리는 -inf 로 채워 기존 vocab-parallel
++    로짓 gather 경로를 그대로 탄다(V2 드래프트 = MTP compute_logits + argmax; get_top_tokens 도 동일 프록시).
++    축소 어휘 밖 토큰은 드래프트가 못 낼 뿐, verify 가 거부하고 목표 모델 토큰으로 바꾼다.
++    """
++
++    def __init__(self, qweight, scales, local_idx, n_rows, n_pad, k, full_n, device):
++        from vllm.model_executor.layers.quantization.utils.marlin_utils import marlin_make_workspace_new
++        self.qweight = qweight
++        self.scales = scales
++        self.local_idx = local_idx          # [n_rows] int64, 이 랭크 조각 안 열 번호
++        self.n_rows = int(n_rows)           # 실제 축소 어휘 행 수
++        self.n_pad = int(n_pad)             # Marlin 타일 맞춤 패딩 포함 행 수
++        self.k = int(k)
++        self.full_n = int(full_n)           # 이 랭크 조각 전체 행 수(출력 폭). apply 의 layer 는 프록시라 여기 둔다
++        self.workspace = marlin_make_workspace_new(device)
++
++    def apply(self, layer, x, bias=None):
++        from vllm.model_executor.layers.quantization.utils.marlin_utils_fp8 import apply_fp8_marlin_linear
++        compact = apply_fp8_marlin_linear(
++            x, self.qweight, self.scales, self.workspace, self.n_pad, self.k, None
++        )[..., : self.n_rows]
++        out = torch.full(
++            (*compact.shape[:-1], self.full_n), float("-inf"),
++            dtype=compact.dtype, device=compact.device,
++        )
++        out[..., self.local_idx] = compact
++        return out
++
++
++def _build_subset_draft_head(layer, ids_path: str, group_size: int = 128, prefix: str = "") -> None:
++    import json as _json
++    from vllm.model_executor.layers.quantization.utils.marlin_utils_fp8 import marlin_quant_fp8_torch
++    w = layer.weight.data                      # 이 랭크 BF16 조각 [n_local_padded, k]
++    n_local, k = w.shape
++    si = layer.shard_indices
++    start, end = int(si.org_vocab_start_index), int(si.org_vocab_end_index)
++    ids = torch.tensor(sorted(set(_json.load(open(ids_path)))), dtype=torch.long)
++    ids = ids[(ids >= start) & (ids < end)] - start
++    n_rows = int(ids.numel())
++    n_pad = (n_rows + 255) // 256 * 256        # Marlin 타일 정렬, 패딩 행 출력은 결과에서 잘라냄
++    with torch.no_grad():
++        # 패딩 행은 실제 첫 행 복사: 0 행이면 FP8 스케일 0 → 0/0=NaN 열(잘라내긴 하지만 취약)
++        sub_w = w[ids.to(w.device)][[0]].repeat(n_pad, 1)
++        sub_w[:n_rows] = w[ids.to(w.device)]
++        _ref, q_w, s = marlin_quant_fp8_torch(sub_w, group_size)
++        rel = ((_ref.T[:n_rows].float() - sub_w[:n_rows].float()).norm() / sub_w[:n_rows].float().norm()).item()
++        del _ref, sub_w
++    layer.subset_draft_head = _SubsetDraftHead(q_w, s, ids.to(w.device), n_rows, n_pad, k, n_local, w.device)
++    logger.info_once(
++        "[ours] subset draft lm_head on %s: %d/%d rows of this shard (FP8 W8A16 g%d, rel-err %.4f), vocab file %s",
++        prefix, n_rows, n_local, group_size, rel, ids_path,
++    )
++
++
++def _build_int4_draft_head(layer, group_size: int = 128) -> None:
++    from vllm.model_executor.layers.quantization.utils.marlin_utils_test import marlin_quantize
++    from vllm.scalar_type import scalar_types
++    w = layer.weight.data
++    n, k = w.shape
++    with torch.no_grad():
++        w_ref, q_w, s, _g, _si, _rp = marlin_quantize(
++            w.t().contiguous(), scalar_types.uint4b8, group_size, act_order=False
++        )
++        rel = ((w_ref.t().float() - w.float()).norm() / w.float().norm()).item()
++        del w_ref
++    layer.int4_draft_head = _Int4DraftHead(q_w, s, n, k, w.device)
++    logger.info_once(
++        "[ours] INT4 draft lm_head built: shard %dx%d g%d rel-err %.4f (MTP draft top-k only; verify head untouched)",
++        n, k, group_size, rel,
++    )
++
++
+ class Exl3Config(QuantizationConfig):
+     """Configuration for modern and legacy EXL3 trellis checkpoints."""
+ 
+@@ -718,6 +937,98 @@
+             prefix = "lm_head"
+         if isinstance(layer, LinearBase) or is_lm_head:
+             if not self._linear_prefix_is_exl3(prefix):
++                # [ours] VLLM_EXL3_DENSE_FP8=1: 비-EXL3 dense 선형층을 로드 시
++                # 블록 FP8(128x128, e4m3)로 온라인 양자화. 근거: nsys 실측에서
++                # dense BF16 GEMM 이 디코드 스텝의 56% (17.6 GiB/스텝 읽기).
++                # DeepSeek-V4 dense 층과 동일 포맷 → B12xFp8BlockScaledMMKernel.
++                # lm_head 는 BF16 유지(별도 A/B), 128 배수 아닌 shape 은 BF16 유지.
++                if os.environ.get("VLLM_EXL3_DENSE_FP8", "0") == "1" and (
++                    not is_lm_head or os.environ.get("VLLM_EXL3_LMHEAD_FP8", "0") == "1"
++                ):
++                    # ParallelLMHead 는 VocabParallelEmbedding 계열이라 attr 이름이 다르다
++                    in_sz = getattr(layer, "input_size", None) or getattr(layer, "embedding_dim", None)
++                    out_sz = getattr(layer, "output_size", None) or getattr(layer, "num_embeddings", None)
++                    if in_sz and out_sz and in_sz % 128 == 0:  # N 은 커널이 패딩
++                        from vllm.model_executor.layers.quantization.online.fp8 import (
++                            Fp8PerBlockOnlineLinearMethod,
++                        )
++                        kern = os.environ.get("VLLM_EXL3_DENSE_FP8_KERNEL", "auto")
++                        logger.info_once(
++                            "[ours] dense FP8 online: routing non-EXL3 linears to "
++                            "Fp8PerBlockOnlineLinearMethod (kernel=%s)", kern
++                        )
++                        if kern == "marlin":
++                            # 가중치만 FP8(W8A16): 활성화는 BF16 유지 → b12x 경로의
++                            # MXFP8 활성화 양자화 오차 제거. Marlin 은 sm_121 에서
++                            # VLLM_TEST_FORCE_FP8_MARLIN=1 필요.
++                            from vllm.model_executor.kernels.linear import init_fp8_linear_kernel
++                            from vllm.model_executor.kernels.linear.scaled_mm.marlin import (
++                                MarlinFP8ScaledMMLinearKernel,
++                            )
++
++                            class _Fp8BlockOnlineMarlin(Fp8PerBlockOnlineLinearMethod):
++                                def create_weights(self, layer, input_size_per_partition,
++                                                   output_partition_sizes, input_size, output_size,
++                                                   params_dtype, **extra):
++                                    super(Fp8PerBlockOnlineLinearMethod, self).create_weights(
++                                        layer, input_size_per_partition, output_partition_sizes,
++                                        input_size, output_size, params_dtype, **extra)
++                                    layer.weight_block_size = self.weight_block_size
++                                    self.fp8_linear = init_fp8_linear_kernel(
++                                        activation_quant_key=self.activation_quant_key,
++                                        weight_quant_key=self.weight_quant_key,
++                                        weight_shape=layer.weight.shape,
++                                        input_dtype=self.input_dtype,
++                                        out_dtype=self.out_dtype,
++                                        force_kernel=MarlinFP8ScaledMMLinearKernel,
++                                        module_name="Fp8BlockOnlineMarlin(W8A16)",
++                                    )
++
++                                def process_weights_after_loading(self, layer):
++                                    # [ours] lm_head 만: FP8 패킹 전에 BF16 원본으로 INT4 드래프트 헤드 생성
++                                    if getattr(self, "build_int4_draft_head", False) and not getattr(
++                                        layer, "_already_called_process_weights_after_loading", False
++                                    ):
++                                        _build_int4_draft_head(layer)
++                                    # [ours] lm_head 만: FP8 패킹 전에 BF16 원본으로 축소 어휘 드래프트 헤드 생성
++                                    if getattr(self, "subset_draft_vocab", "") and not getattr(
++                                        layer, "_already_called_process_weights_after_loading", False
++                                    ):
++                                        _build_subset_draft_head(
++                                            layer, self.subset_draft_vocab, prefix=self.subset_draft_prefix
++                                        )
++                                    if not hasattr(layer, "_prefill_nk"):
++                                        layer._prefill_nk = (int(layer.weight.shape[0]), int(layer.weight.shape[1]))
++                                    super().process_weights_after_loading(layer)
++
++                                def apply(self, layer, x, bias=None):
++                                    # [ours] 프리필(M 큼)은 BF16 cuBLAS, 디코드(M 작음)는 Marlin
++                                    if self.prefill_bf16_min_m > 0 and x.shape[0] > self.prefill_bf16_min_m:
++                                        w = marlin_fp8_dequant_bf16_triton(layer)
++                                        return torch.nn.functional.linear(x, w, bias)
++                                    return super().apply(layer, x, bias)
++
++                            _m = _Fp8BlockOnlineMarlin()
++                            _m.build_int4_draft_head = bool(is_lm_head) and (
++                                os.environ.get("VLLM_EXL3_INT4_DRAFT_HEAD", "0") == "1"
++                            )
++                            # [ours] 본 모델 lm_head 에만. V2 load_eagle_model 이 MTP 의 shared_head.head 를
++                            # 본 모델 lm_head 로 갈아끼우므로(spec_decode/eagle/utils.py) 드래프트도 이 모듈을
++                            # 쓴다. MTP 자체 헤드('...layers.<N>.head')는 웨이트 없이 만들어졌다 버려지니 제외.
++                            # 서브셋 헤드는 속성으로만 붙고 quant_method 는 그대로라 verify 경로는 불변.
++                            _m.subset_draft_vocab = (
++                                os.environ.get("VLLM_GLM53_DRAFT_VOCAB", "")
++                                if is_lm_head and re.search(r"(^|\.)lm_head$", prefix)
++                                else ""
++                            )
++                            _m.subset_draft_prefix = prefix
++                            _m.prefill_bf16_min_m = (
++                                int(os.environ.get("VLLM_EXL3_PREFILL_BF16_MIN_M", "64"))
++                                if os.environ.get("VLLM_EXL3_PREFILL_BF16", "0") == "1" and not is_lm_head
++                                else 0
++                            )
++                            return _m
++                        return Fp8PerBlockOnlineLinearMethod()
+                 return UnquantizedLinearMethod()
+             return Exl3LinearMethod(self)
+         if isinstance(layer, RoutedExperts):
+@@ -1381,6 +1692,27 @@
+         super().__init__(moe)
+         self.quant_config = quant_config
+ 
++    def _swiglu_clamp_limit(self) -> float | None:
++        """[ours] SwiGLU clamp for the routed experts (env VLLM_EXL3_MOE_SWIGLU_CLAMP=1).
++
++        GLM-5.3 sets swiglu_limit=10 (gate <= L, up in [-L, L], as vLLM SiluAndMulWithClamp).
++        vLLM carries it on moe_config, and its standard MoE backends honour it, but this
++        method calls its kernels directly and upstream never passed it on — so every routed
++        expert ran an unclamped SwiGLU and outlier tokens got larger expert outputs than the
++        model was trained with. (The live b12x path keeps BF16/FP32 intermediates, so this is a
++        reference deviation, not an overflow; only the unused exllamav3 path has fp16 ones.)
++        Off by default = upstream behaviour; the lane env turns it on.
++        """
++        if os.environ.get("VLLM_EXL3_MOE_SWIGLU_CLAMP", "0") != "1":
++            return None
++        limit = getattr(self.moe, "swiglu_limit", None)
++        if not limit:
++            return None
++        if not getattr(self, "_logged_swiglu_clamp", False):
++            self._logged_swiglu_clamp = True
++            logger.info("[ours] EXL3 routed-expert SwiGLU clamp ON: swiglu_limit=%s", limit)
++        return float(limit)
++
+     def create_weights(
+         self,
+         layer: RoutedExperts,
+@@ -1669,6 +2001,15 @@
+                 "rank-sliced EXL3 full rotations require hidden and "
+                 "intermediate dimensions divisible by 128"
+             )
++        # [ours] B12X_EXL3_TRELLIS_TILE="fc1_k,fc1_n,fc2_k,fc2_n" 로 디코드 타일 A/B(GB10 48SM:
++        # 64x128 이면 cta_threads 128 → SM당 CTA 3개 상주 가능). FC1/FC2 스레드 수는 같아야 함.
++        _tile_env = os.environ.get("B12X_EXL3_TRELLIS_TILE", "")
++        if _tile_env:
++            _t = tuple(int(v) for v in _tile_env.split(","))
++            if len(_t) != 4 or (_t[0] * _t[1]) != (_t[2] * _t[3]):
++                raise ValueError(f"B12X_EXL3_TRELLIS_TILE={_tile_env!r}: need 4 ints with fc1_k*fc1_n == fc2_k*fc2_n")
++            logger.info_once("[ours] EXL3 trellis tile override: %s", _t)
++            return _t
+         if hidden_size % 256 == 0 and intermediate_size % 256 == 0:
+             return (64, 256, 64, 256)
+         return (64, 128, 64, 128)
+@@ -2017,6 +2358,7 @@
+                 force_tile_config=mixed["tile_config"],
+                 rotation_input_dtype=("bf16" if x.dtype == torch.bfloat16 else "fp16"),
+                 route_ids_dtype=topk_ids.dtype,
++                swiglu_limit=self._swiglu_clamp_limit(),  # [ours] None = upstream (no clamp)
+             )
+             return {
+                 "capacity": capacity,
+@@ -2193,6 +2535,7 @@
+                 weight_plan=layer.exl3_trellis_weights.plan,
+                 quant_mode="w4a16",
+                 w4a16_block_size_m=plan_block_m,
++                swiglu_limit=self._swiglu_clamp_limit(),  # [ours] None = upstream (no clamp)
+             )
+             plan = api.plan(caps)
+             scratch_spec = plan.scratch_specs()[0]
+@@ -2436,7 +2779,9 @@
+                 False,
+                 True,
+                 False,
+-                0.0,
++                # [ours] act_limit — the only float argument (exllamav3 exl3_moe.cuh: gate<=L,
++                # up in [-L,L]; 0.0 = off). exl3_moe_fused is fork-only; same convention assumed.
++                float(self._swiglu_clamp_limit() or 0.0),
+                 0,
+             )
+             return out32.to(x.dtype)
+@@ -2479,7 +2824,9 @@
+                 False,
+                 True,
+                 False,
+-                0.0,
++                # [ours] act_limit — the only float argument (exllamav3 exl3_moe.cuh: gate<=L,
++                # up in [-L,L]; 0.0 = off). exl3_moe_fused is fork-only; same convention assumed.
++                float(self._swiglu_clamp_limit() or 0.0),
+             )
+         return out32.to(x.dtype)
+ 
+@@ -2533,6 +2880,10 @@
+             expert_input = x_2d.index_select(0, token_ids)
+             gate = self._apply_expert(layer, "w13", expert_input, expert_id, "w1")
+             up = self._apply_expert(layer, "w13", expert_input, expert_id, "w3")
++            limit = self._swiglu_clamp_limit()  # [ours]
++            if limit is not None:
++                gate = gate.clamp(max=limit)
++                up = up.clamp(min=-limit, max=limit)
+             hidden = torch.nn.functional.silu(gate) * up
+             expert_output = self._apply_expert(layer, "w2", hidden, expert_id, "w2")
+             route_weight = weights[token_ids, route_ids].unsqueeze(-1)

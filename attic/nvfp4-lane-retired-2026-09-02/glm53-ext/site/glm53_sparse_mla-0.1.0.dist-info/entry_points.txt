@@ -1,0 +1,3 @@
+[vllm.general_plugins]
+glm53_moe_fix = glm53_sparse_mla.moe_fix:register
+glm53_sparse_mla = glm53_sparse_mla.backend:register
