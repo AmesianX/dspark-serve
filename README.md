@@ -89,7 +89,7 @@ DFlash2 드래프터(산문에서 MTP-4보다 느림). 이유는 레인 README �
 ## 3. 실시간 검열 해제 스위치 (`/ab`) — 우리만의 구조
 
 abliteration(검열 제거) 모델을 통째로 서빙하면 거부만 사라지는 게 아니라 **"없는 것은 없다"고 말하는 능력도 같이
-사라진다.** 가짜 대상 60건 함정에서 원본은 4건, abliterated는 18~22건을 지어냈다. 그래서 우리는 **원본을 서빙하고,
+사라진다.** 가짜 대상 60건 함정에서 원본은 4건, abliterated는 18\~22건을 지어냈다. 그래서 우리는 **원본을 서빙하고,
 검열 해제는 필요한 순간에만 켠다.**
 
 원리: abliteration이 건드린 것은 `self_attn.o_proj` 45개뿐이고, 이 텐서는 4bpw 체크포인트에서도 BF16이다.
@@ -109,7 +109,7 @@ curl -X POST -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json'
 curl -X POST ... -d '{"scale":0}' http://<헤드>:8000/ab                         # OFF (기본)
 ```
 
-실측: 중립 타깃 16문항 거부 5건 → 0건, 속도 손실 스텝당 1~2ms, temperature 0 결정성 양쪽 모두 유지.
+실측: 중립 타깃 16문항 거부 5건 → 0건, 속도 손실 스텝당 1\~2ms, temperature 0 결정성 양쪽 모두 유지.
 codemason 클라이언트는 `/ab auto`로 "요청을 승낙하는 턴"에만 켜고 도구 호출이 시작되면 끈다. 상세는 [AB-SWITCH.md](glm53-exl3-lane/AB-SWITCH.md).
 
 ## 4. 마지막 버그: '!' 붕괴 (2026-10-02 해결)
@@ -282,7 +282,7 @@ cd ~/work/dspark-serve/glm53-exl3-lane
 ./vllm-glm53-exl3.sh RESTARTALL
 ```
 
-READY까지 약 3~4분. 마지막에 `✅ API READY ... 원본 + /ab off` 가 찍히면 성공이다.
+READY까지 약 3\~4분. 마지막에 `✅ API READY ... 원본 + /ab off` 가 찍히면 성공이다.
 처음 기동은 JIT 컴파일 캐시(`~/glm53-vllm-cache`)를 만드느라 첫 요청이 느리다.
 
 > `sync-lane-67.sh` 는 커밋되지 않은 변경이 있으면 거부한다(§5.4에서 커밋했으면 그대로 된다).
