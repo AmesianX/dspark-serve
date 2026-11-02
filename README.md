@@ -30,7 +30,7 @@ DGX Spark(GB10) **두 대**를 200GbE 레일로 묶어 **GLM-5.3-Flash**(4bpw EX
 
 | 문서 | 내용 |
 |---|---|
-| **이 README** | 구조, 우리 구성의 차이점, **새로 설치하기**, **구버전(09-05 키트)에서 업그레이드하기** |
+| **이 README** | 구조, 우리 구성의 차이점, **새로 설치하기** |
 | [`glm53-exl3-lane/README.md`](glm53-exl3-lane/README.md) | 운영 명령, 설정 노브, 실측 원장, 변경 절차 |
 | [`glm53-exl3-lane/HANDOFF.md`](glm53-exl3-lane/HANDOFF.md) | 패치별 원리와 함정(개발자용) |
 | [`glm53-exl3-lane/AB-SWITCH.md`](glm53-exl3-lane/AB-SWITCH.md) | 실시간 검열 해제 스위치 상세 |
@@ -306,7 +306,9 @@ curl http://localhost:8000/v1/chat/completions -H "Authorization: Bearer <키>" 
 
 ---
 
-## 6. 구버전(09-05 인수인계 키트)에서 업그레이드하기
+<details>
+<summary><b>6. 구버전(09-05 인수인계 키트)에서 업그레이드하기</b> — 펼쳐서 보기</summary>
+
 
 2026-09-05에 전달한 `glm53-flash-2xspark-kit` 으로 설치해 쓰고 있다면, 그때는 **abliterated 모델이 기본**이었다.
 그 뒤로 바뀐 것이 많아서(위 §2 대부분, 원본 + 실시간 스위치 구조, 경로 정리) **변경분을 따라가지 말고 레인을 통째로
@@ -368,6 +370,8 @@ curl -s -H "Authorization: Bearer <키>" http://localhost:8000/ab   # "mode":"or
 원본의 76개 샤드가 그 파일과 하드링크를 공유한다(지워도 원본 쪽은 남지만, 어댑터를 다시 만들 때 필요하다).
 
 ---
+
+</details>
 
 ## 7. 자주 하는 실수
 
