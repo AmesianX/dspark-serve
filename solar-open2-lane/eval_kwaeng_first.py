@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-import os
 """유저 상설 평가 세트: ① 과학자 질문 ② 괭테스트(자모 분해, 정답 ㄱ+ㅙ+ㅇ)."""
-import json, time, sys, urllib.request
+import json, os, sys, time, urllib.request
 
 BASE, MODEL = "http://127.0.0.1:8000/v1", "solar-open2-250b"
-KEY = os.environ["VLLM_API_KEY"]
+# [2026-11-13] 평문 키 제거 — 이 리포는 공개(github.com/AmesianX/dspark-serve).
+KEY = os.environ.get("VLLM_API_KEY") or ""
+if not KEY:
+    raise SystemExit("VLLM_API_KEY 를 환경변수로 줄 것 (solar-open2-lane/solar-serve.env 참조)")
 
 def chat(messages, max_tokens=2000, timeout=900):
     req = urllib.request.Request(BASE + "/chat/completions",

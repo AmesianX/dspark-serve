@@ -1,11 +1,39 @@
 #!/usr/bin/env bash
-# python3 -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())"
-export LLAMACPP_AES_KEY="jCuJ9cvYtgXbl/Tp5zWBOXIJI02c3Bw3a0NN03XPp9E="
+# 비밀값은 비추적 파일에서 읽는다. 이 리포는 공개돼 있다
+# (github.com/AmesianX/dspark-serve) — 2026-11-13 까지 AES 키가 이 줄에 평문으로
+# 커밋돼 있었다. 키 소유가 곧 8443 의 자격증명이므로 평문 커밋은 게이트 무력화와
+# 같다. gateway.env.example 을 gateway.env 로 복사해 값을 채운다.
+GATEWAY_ENV="${GATEWAY_ENV:-$(dirname "$0")/gateway.env}"
+if [ -z "${LLAMACPP_AES_KEY:-}" ] && [ -f "$GATEWAY_ENV" ]; then
+  # shellcheck disable=SC1090
+  . "$GATEWAY_ENV"
+fi
+export LLAMACPP_AES_KEY
+[ -n "${LLAMACPP_AES_KEY:-}" ] || {
+  echo "LLAMACPP_AES_KEY 를 찾을 수 없다 ($GATEWAY_ENV 확인, gateway.env.example 참조)" >&2
+  exit 1
+}
 export VLLM_UPSTREAM=http://127.0.0.1:8000
+
+# The gateway attaches the vLLM bearer token itself to decrypted requests, so the
+# key must be in its environment. Source it from the lane's env file instead of
+# pasting the secret a second time - one definition, one place to rotate it.
+# That file uses `: "${VAR:=value}"` form, which systemd EnvironmentFile cannot
+# read, so the unit runs this script (`fg`) rather than uvicorn directly.
+LANE_ENV="${LANE_ENV:-$(dirname "$0")/glm53-exl3-lane/glm53-serve.env}"
+if [ -z "${VLLM_API_KEY:-}" ] && [ -f "$LANE_ENV" ]; then
+  VLLM_API_KEY="$(set -a; . "$LANE_ENV" >/dev/null 2>&1; printf '%s' "${VLLM_API_KEY:-}")"
+fi
+export VLLM_API_KEY
+[ -n "$VLLM_API_KEY" ] || { echo "VLLM_API_KEY 를 찾을 수 없다 ($LANE_ENV 확인)" >&2; exit 1; }
 
 HOST=0.0.0.0
 PORT=8443
 APP=encrypt_gateway:app
+# systemd gives this unit a minimal PATH that does not include ~/.local/bin, so
+# resolve uvicorn here instead of relying on the caller's PATH.
+UVICORN="${UVICORN:-$(command -v uvicorn 2>/dev/null || echo /home/user/.local/bin/uvicorn)}"
+[ -x "$UVICORN" ] || { echo "uvicorn 실행파일을 찾을 수 없다: $UVICORN" >&2; exit 1; }
 
 cd "$(dirname "$0")" || exit 1
 PIDFILE="$(pwd)/gateway.pid"
@@ -22,13 +50,13 @@ _running_pid() {
   return 1
 }
 
-run_fg() { exec uvicorn "$APP" --host "$HOST" --port "$PORT"; }
+run_fg() { exec "$UVICORN" "$APP" --host "$HOST" --port "$PORT"; }
 
 start() {
   if pid=$(_running_pid); then
     echo "already running (pid=$pid, port=$PORT)"; return 0
   fi
-  nohup uvicorn "$APP" --host "$HOST" --port "$PORT" >>"$LOGFILE" 2>&1 &
+  nohup "$UVICORN" "$APP" --host "$HOST" --port "$PORT" >>"$LOGFILE" 2>&1 &
   echo $! > "$PIDFILE"
   sleep 1
   if kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then

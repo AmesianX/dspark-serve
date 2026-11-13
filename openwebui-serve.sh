@@ -33,7 +33,13 @@ IMG="${IMG:-${REPO}:${IMG_TAG}}"
 VOLUME="${VOLUME:-open-webui}"               # /app/backend/data
 BACKUP_DIR="${BACKUP_DIR:-/home/user/backup/open-webui}"
 UPSTREAM="${UPSTREAM:-http://host.docker.internal:8000/v1}"
-API_KEY="${API_KEY:?API 키를 환경변수로 지정하세요}"
+# [2026-11-13] 평문 키 제거 — 이 리포는 공개돼 있다
+# (github.com/AmesianX/dspark-serve). 키는 추적되지 않는 glm53-serve.env 에서 읽는다.
+LANE_ENV="${LANE_ENV:-$(dirname "$0")/glm53-exl3-lane/glm53-serve.env}"
+if [ -z "${API_KEY:-}" ] && [ -f "$LANE_ENV" ]; then
+  API_KEY="$(set -a; . "$LANE_ENV" >/dev/null 2>&1; printf '%s' "${VLLM_API_KEY:-}")"
+fi
+[ -n "${API_KEY:-}" ] || { echo "API_KEY 를 환경변수로 주거나 $LANE_ENV 에 VLLM_API_KEY 를 설정할 것" >&2; exit 1; }
 TAG="[open-webui]"
 
 exists()  { docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; }

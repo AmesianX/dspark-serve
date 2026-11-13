@@ -26,7 +26,14 @@ MASTER_IP=10.0.1.1; SLAVE_IP=10.0.1.2; SLAVE_SSH=10.0.1.2
 SELF="$HOME/work/dspark-serve/vllm-dspark-lv0731.sh"
 SSH="ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8"
 PIDFILE=/tmp/vllm_dspark_memwatch.pid
-API_KEY="${API_KEY:?API 키를 환경변수로 지정하세요}"
+# [2026-11-13] 평문 키 제거 — 이 리포는 공개돼 있다
+# (github.com/AmesianX/dspark-serve). 키는 추적되지 않는 glm53-serve.env 에서 읽는다.
+LANE_ENV="${LANE_ENV:-$(dirname "$0")/glm53-exl3-lane/glm53-serve.env}"
+if [ -z "${API_KEY:-}" ] && [ -f "$LANE_ENV" ]; then
+  API_KEY="$(set -a; . "$LANE_ENV" >/dev/null 2>&1; printf '%s' "${VLLM_API_KEY:-}")"
+fi
+[ -n "${API_KEY:-}" ] || { echo "API_KEY 를 환경변수로 주거나 $LANE_ENV 에 VLLM_API_KEY 를 설정할 것" >&2; exit 1; }
+
 # --- serve knobs (env-overridable) -----------------------------------------
 SPEC_TOKENS="${SPEC_TOKENS:-3}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-524288}"             # 512K. 1M에서 축소(2026-08-25): 프리필 워크스페이스가 예산 밖에서

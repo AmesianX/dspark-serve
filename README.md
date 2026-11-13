@@ -63,6 +63,9 @@ DGX Spark(GB10) **두 대**를 200GbE 레일로 묶어 **GLM-5.3-Flash**(4bpw EX
 - **조작은 스크립트 하나**: 헤드에서 `glm53-exl3-lane/vllm-glm53-exl3.sh RESTARTALL`.
   양 노드 정지 → 메모리 감시기 → 워커 기동 → 헤드 기동 → READY 대기까지 한 번에 한다.
 - 디코딩: MTP-4 스펙 디코딩(모델 내장 MTP 헤드). KV 캐시 FP8(`fp8_ds_mla`), 프리픽스 캐시 사용.
+- **외부 노출면은 `edge/`**: Nginx Proxy Manager(443/80) + searxng. 서빙 박스가 공유기 DMZ 안에 있으면
+  LAN IP 바인딩은 보안이 아니다 — 포트를 퍼블리시하지 않는 것이 유일한 차단이다.
+  포트 정책·재구성 순서·NPM 관리 UI 의 SSH 터널 접속은 [`edge/README.md`](edge/README.md).
 
 ## 2. 우리 구성이 순정 킷과 다른 점
 
@@ -210,7 +213,15 @@ ssh <워커> 'mkdir -p ~/work/dspark-serve'
 
 ### 5.4 사이트 값 설정
 
-`glm53-exl3-lane/glm53-serve.env` 맨 위 **① 사이트 값** 블록을 자기 환경으로 고친다. 그 아래 ②·③은 건드리지 않는다.
+설정 파일은 **키가 들어가므로 git 에 추적하지 않는다**. 템플릿을 복사해서 쓴다.
+
+```bash
+cd ~/work/dspark-serve/glm53-exl3-lane
+cp glm53-serve.env.example glm53-serve.env
+chmod 600 glm53-serve.env
+```
+
+복사한 `glm53-serve.env` 맨 위 **① 사이트 값** 블록을 자기 환경으로 고친다. 그 아래 ②·③은 건드리지 않는다.
 
 | 변수 | 넣을 값 | 확인 방법 |
 |---|---|---|
@@ -223,7 +234,10 @@ ssh <워커> 'mkdir -p ~/work/dspark-serve'
 
 RoCE GID 인덱스는 런처가 sysfs에서 자동으로 찾는다. 직접 정하지 말 것.
 
-고친 설정은 커밋해 둔다(워커로 밀 때 동기화 스크립트가 커밋되지 않은 변경을 거부한다). 새 박스에는 git 사용자
+`glm53-serve.env` 자체는 `.gitignore` 에 있으므로 커밋하지 않는다 — 워커로는 rsync 가 그대로
+복사한다(`sync-lane-67.sh` 는 `git status --porcelain` 만 검사하고, 무시된 파일은 거기 나타나지 않는다).
+
+레인의 **다른** 파일을 고쳤다면 커밋해 둔다(워커로 밀 때 동기화 스크립트가 커밋되지 않은 변경을 거부한다). 새 박스에는 git 사용자
 정보가 없어 커밋이 실패하므로 이 저장소에 한 번 정해 둔다(값은 아무거나 상관없다).
 
 ```bash
@@ -303,6 +317,29 @@ curl -s -H "Authorization: Bearer <키>" http://localhost:8000/ab     # {"scale"
 curl http://localhost:8000/v1/chat/completions -H "Authorization: Bearer <키>" -H 'Content-Type: application/json' \
   -d '{"model":"glm-5.3-flash","messages":[{"role":"user","content":"안녕? 한 문장으로 자기소개 해줘."}],"max_tokens":400}'
 ```
+
+### 5.8 암호화 게이트 `:8443` (원격에서 쓸 때만)
+
+`encrypt_gateway.py` 는 vLLM 앞에 서서 **요청/응답 본문**을 AES-256-GCM 으로 주고받는다.
+평문 HTTP 위에서도 본문이 암호문이고, 키는 네트워크로 가지 않는다 — 소유 자체가 자격증명이다.
+복호가 되면 키 보유가 증명되므로, 그때 게이트가 vLLM 베어러 토큰을 **대신 붙인다**. 따라서
+클라이언트는 vLLM 키를 갖고 있지 않아도 되고, 평문 HTTP 에 베어러 토큰을 흘리지도 않는다.
+
+```bash
+cd ~/work/dspark-serve
+cp gateway.env.example gateway.env && chmod 600 gateway.env
+python3 -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())"  # 이 값을 gateway.env 에
+./setup-systemd.sh install        # systemd 등록 + 기동
+./run-gateway.sh status
+```
+
+클라이언트 설정에 같은 AES 키를 넣는다. 베이스 URL 은 `http://<주소>:8443`(또는 그 앞의 TLS vhost).
+
+- `gateway.env` 는 `.gitignore` 에 있다. **커밋하지 말 것** — 공개 저장소에 올라간 키는
+  게이트 전체를 무력화한다.
+- 게이트는 `/docs`·`/openapi.json` 을 서빙하지 않는다(`FastAPI(docs_url=None, ...)`).
+- ⛔ `_passthrough` 에 `Authorization` 을 주입하지 말 것. 거기 주입하면 암호화하지 않은
+  요청이 vLLM 인증을 그대로 우회한다.
 
 ---
 

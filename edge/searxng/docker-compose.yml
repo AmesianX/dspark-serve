@@ -1,0 +1,34 @@
+# SearXNG (.66)
+#
+# 재구성:  cd /home/user/work/searxng && docker compose up -d
+#
+# ⛔ 호스트 포트를 퍼블리시하지 않는다.
+#    과거: -p 192.168.1.66:8888:8080  → .66은 공유기 DMZ라서 LAN IP 바인딩이
+#    노출을 전혀 줄이지 않았고, 8888 은 인증 없이 인터넷에 열려 있었다.
+#
+# 유일한 외부 경로: https://searxng.systemboan.net (NPM 443, vhost 17)
+#    NPM 이 nginx-network 로 `searxng:8080` 에 직접 닿으므로 호스트 포트가 필요 없다.
+#    vhost 17 은 X-API-Key 헤더가 없으면 403 (ACME 챌린지만 예외).
+#    codemason 은 이 TLS 주소 + searxng_api_key 로 클라이언트에서 직접 검색한다.
+#
+# 설정은 /home/user/searxng/settings.yml (바인드). 캐시는 날아가도 무해.
+
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    restart: unless-stopped
+    environment:
+      SEARXNG_BASE_URL: https://searxng.systemboan.net/
+    volumes:
+      - /home/user/searxng:/etc/searxng
+      - searxng-cache:/var/cache/searxng
+    networks:
+      - nginx-network
+
+volumes:
+  searxng-cache:
+
+networks:
+  nginx-network:
+    external: true

@@ -39,3 +39,11 @@ build/
 *.so
 .ninja_*
 *.egg-info/
+
+# 비밀값 — 추적 금지. 이 리포는 공개돼 있다(github.com/AmesianX/dspark-serve).
+# 각 박스에서 대응되는 *.example 을 복사해 값을 채운다.
+# sync-lane-67.sh 는 rsync 로 밀고 `git status --porcelain` 만 검사하므로,
+# 무시된 파일은 가드에 걸리지 않고 워커로는 그대로 복사된다.
+glm53-exl3-lane/glm53-serve.env
+solar-open2-lane/solar-serve.env
+gateway.env

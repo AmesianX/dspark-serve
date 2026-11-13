@@ -3,7 +3,13 @@
 # usage: ./bench.sh [runs=3] [max_tokens=400]
 set -uo pipefail
 RUNS="${1:-3}"; MT="${2:-400}"
-KEY="${KEY:?API 키를 환경변수로 지정하세요}"
+# [2026-11-13] 평문 키 제거 — 이 리포는 공개돼 있다
+# (github.com/AmesianX/dspark-serve). 키는 추적되지 않는 glm53-serve.env 에서 읽는다.
+LANE_ENV="${LANE_ENV:-$(dirname "$0")/glm53-exl3-lane/glm53-serve.env}"
+if [ -z "${KEY:-}" ] && [ -f "$LANE_ENV" ]; then
+  KEY="$(set -a; . "$LANE_ENV" >/dev/null 2>&1; printf '%s' "${VLLM_API_KEY:-}")"
+fi
+[ -n "${KEY:-}" ] || { echo "KEY 를 환경변수로 주거나 $LANE_ENV 에 VLLM_API_KEY 를 설정할 것" >&2; exit 1; }
 MODEL="${MODEL:-DSV4-Flash}"
 PROMPT="Explain how a CUDA kernel achieves memory coalescing, with a concrete matrix-transpose example. Be detailed."
 total=0

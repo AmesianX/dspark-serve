@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-import os
 """Solar Open 2 기동 직후 스모크: 한국어 품질 / 툴콜 non-ASCII / t/s."""
-import json, time, sys, urllib.request
+import json, os, sys, time, urllib.request
 
 BASE = "http://127.0.0.1:8000/v1"
-KEY  = os.environ["VLLM_API_KEY"]
+# [2026-11-13] 평문 키 제거 — 이 리포는 공개(github.com/AmesianX/dspark-serve).
+KEY = os.environ.get("VLLM_API_KEY") or ""
+if not KEY:
+    raise SystemExit("VLLM_API_KEY 를 환경변수로 줄 것 (solar-open2-lane/solar-serve.env 참조)")
 MODEL = "solar-open2-250b"
 
 def call(payload, timeout=600):

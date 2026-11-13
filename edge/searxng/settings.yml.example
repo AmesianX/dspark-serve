@@ -1,0 +1,48 @@
+# codemason 자동 생성 — SearXNG 설정. 기본값 위에 필요한 것만 덮어쓴다.
+use_default_settings: true
+general:
+  instance_name: "codemason-searxng"
+server:
+  secret_key: "__GENERATE_WITH_openssl_rand_hex_32__"
+  limiter: false
+  image_proxy: false
+search:
+  formats:
+    - html
+    - json
+# 일반 검색 다양화: 취약 4개(brave/ddg/google_cse/startpage)가 동시에 막혀도
+# 아래 견고/독립 엔진들이 결과를 받치도록. 고장난 startpage는 끔.
+engines:
+  - name: startpage
+    disabled: true
+  # ⛔ bing 비활성 (2026-08-02). '메인 백본'이었으나 검색 자체를 하지 않는 상태로
+  #    확인됨 — searxng의 bing 파서가 현재 Bing 응답에서 유기적 결과 대신 광고/
+  #    트렌딩 링크를 긁어온다. 근거:
+  #      - 순수 난수 질의 'zxqwvbnmklkjhgfd qpwoeirutyalskdjfh' -> Garena 3건
+  #      - 동일 질의 반복 시 결과가 매번 바뀜(Canva -> 5 Seconds of Summer)
+  #      - 'vLLM speculative decoding' -> Canva 가입페이지
+  #      - 'Linux kernel io_uring documentation' -> 로지텍 사설수리점
+  #    ⚠️ 위험한 이유: duckduckgo/qwant는 CAPTCHA 예외를 던져 unresponsive로
+  #    표시되지만 bing은 조용히 200 성공을 반환한다. 실패가 감지되지 않고,
+  #    1순위 백본이라 최상단을 차지해 그대로 컨텍스트로 들어갔다.
+  #    되살리려면 먼저 난수 질의로 0건이 나오는지 검증할 것.
+  - name: bing
+    disabled: true
+  - name: yahoo           # bing 계열, 안정적 백업
+    disabled: false
+  - name: mwmbl           # 독립 크롤러, 레이트리밋 없음
+    disabled: false
+  - name: yep             # 독립 색인(Ahrefs). 영문은 양호, 한국어는 관련성 낮음
+    disabled: false
+  - name: presearch       # 독립
+    disabled: false
+  - name: wikipedia
+    disabled: false
+  - name: mojeek          # 자체 색인(가끔 access denied지만 켜둠)
+    disabled: false
+  - name: qwant
+    disabled: false
+  - name: duckduckgo
+    disabled: false
+  - name: brave
+    disabled: false

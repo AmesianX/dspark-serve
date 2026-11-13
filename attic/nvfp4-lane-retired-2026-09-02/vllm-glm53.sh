@@ -30,7 +30,9 @@ MASTER_IP=10.0.1.1; SLAVE_IP=10.0.1.2; SLAVE_SSH=10.0.1.2
 SELF="$HOME/work/dspark-serve/vllm-glm53.sh"
 SSH="ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8"
 PIDFILE=/tmp/vllm_glm53_memwatch.pid
-API_KEY="${API_KEY:?API 키를 환경변수로 지정하세요}"
+# [2026-11-13] 평문 키 제거 — 이 리포는 공개(github.com/AmesianX/dspark-serve).
+# 은퇴한 스크립트라 자동 조회도 하지 않는다. 쓸 일이 생기면 환경변수로 줄 것.
+API_KEY="${API_KEY:?API_KEY 를 환경변수로 줄 것 (glm53-exl3-lane/glm53-serve.env 의 VLLM_API_KEY)}"
 
 # --- serve knobs ------------------------------------------------------------
 SPEC_MODE="${SPEC_MODE:-mtp}"                    # mtp | dflash | off
