@@ -1,0 +1,50 @@
+--- overlay/server_utils.py.orig	2026-11-13 17:05:49.206325841 +0900
++++ overlay/server_utils.py	2026-11-13 17:06:13.298269371 +0900
+@@ -39,7 +39,19 @@
+ logger = init_logger("vllm.entrypoints.openai.server_utils")
+ 
+ 
+-GUARDED_PREFIX = ("/v1", "/v2", "/inference", "/cohere")
++# [ours] 2026-11-13 — upstream only guarded these prefixes:
++#     GUARDED_PREFIX = ("/v1", "/v2", "/inference", "/cohere")
++# Everything else answered with NO Authorization header at all. Verified from
++# off-box: POST /invocations returned a full generation unauthenticated, and
++# /metrics /tokenize /detokenize /docs /openapi.json /version plus our own /ab
++# switch all answered. --api-key is not the whole-server lock it looks like.
++#
++# Threat model is the public internet. No key -> no service, on every path, from
++# every source. The router used to DMZ every port to this box; since 2026-11-13
++# it forwards only 80/443/2222 + WireGuard. The server must not depend on that
++# -- it is one forwarding rule away from being exposed again. Our own callers already send the key, so there is nothing to
++# carve out: vllm-glm53-exl3.sh authenticates its /health and /ab probes.
++GUARDED_PREFIX = ("/",)
+ 
+ 
+ class AuthenticationMiddleware:
+@@ -49,9 +61,7 @@
+ 
+     Notes
+     -----
+-    There are two cases in which authentication is skipped:
+-        1. The HTTP method is OPTIONS.
+-        2. The request path doesn't start with GUARDED_PREFIX (e.g. /health).
++    [ours] Nothing is skipped: every path and every method needs the key.
+     """
+ 
+     def __init__(self, app: ASGIApp, tokens: list[str]) -> None:
+@@ -76,10 +86,11 @@
+         return token_match
+ 
+     def __call__(self, scope: Scope, receive: Receive, send: Send) -> Awaitable[None]:
+-        if (
+-            scope["type"] not in ("http", "websocket")
+-            or scope.get("method") == "OPTIONS"
+-        ):
++        # [ours] upstream also skipped OPTIONS here (CORS preflight). Dropped:
++        # deny-by-default means every method too. Restore the `or
++        # scope.get("method") == "OPTIONS"` clause if a browser client is ever
++        # pointed at this server directly.
++        if scope["type"] not in ("http", "websocket"):
+             # scope["type"] can be "lifespan" or "startup" for example,
+             # in which case we don't need to do anything
+             return self.app(scope, receive, send)

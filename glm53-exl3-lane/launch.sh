@@ -602,6 +602,9 @@ sync
 docker run --rm --privileged alpine sh -c "sync; echo 3 > /proc/sys/vm/drop_caches" >/dev/null 2>&1 \
   || { echo 3 | sudo -n tee /proc/sys/vm/drop_caches >/dev/null; }
 
+# [ours] 2026-11-13 overlay/server_utils.py — --api-key upstream only guarded
+# ("/v1","/v2","/inference","/cohere"); /invocations /metrics /tokenize /docs /ab
+# all answered with no key. The overlay guards EVERY path and method.
 docker run --gpus all -d \
   --name "$NAME" --restart no \
   --network host --ipc host --shm-size 32g \
@@ -634,6 +637,7 @@ docker run --gpus all -d \
   -v "$LANE_DIR/overlay/ab_plugin/glm53_ab_plugin.py:/usr/local/lib/python3.12/dist-packages/glm53_ab_plugin.py:ro" \
   -v "$LANE_DIR/overlay/ab_plugin/dist-info/glm53_ab_plugin-0.1.0.dist-info:/usr/local/lib/python3.12/dist-packages/glm53_ab_plugin-0.1.0.dist-info:ro" \
   -v "$LANE_DIR/overlay/scatter_states.py:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/mamba/ops/scatter_states.py:ro" \
+  -v "$LANE_DIR/overlay/server_utils.py:/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/serve/utils/server_utils.py:ro" \
   -v "$LANE_DIR/overlay/v2runner/model_runner.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu/model_runner.py:ro" \
   -v "$LANE_DIR/overlay/v2runner/spec_ar/speculator.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu/spec_decode/autoregressive/speculator.py:ro" \
   -v "$LANE_DIR/overlay/v2runner/spec_mmtp/speculator.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu/spec_decode/multi_module_mtp/speculator.py:ro" \

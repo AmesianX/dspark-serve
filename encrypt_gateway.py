@@ -56,6 +56,17 @@ def _load_key() -> bytes:
 
 KEY = _load_key()
 
+# vLLM now requires this key on EVERY path (lane overlay/server_utils.py), so it
+# became the one secret protecting everything — and :8443 is plain HTTP, which
+# means a client-sent `Authorization` header would travel the internet in the
+# clear while the body next to it is encrypted. Instead the gateway holds the
+# key and attaches it itself, but ONLY after a body decrypts: producing valid
+# AES-GCM ciphertext already proves possession of the shared key, so that is the
+# credential, and it is never transmitted. Fail closed if it is missing.
+UPSTREAM_KEY = (os.environ.get("VLLM_API_KEY") or "").strip()
+if not UPSTREAM_KEY:
+    raise SystemExit("VLLM_API_KEY is required (attached to decrypted requests)")
+
 
 def encrypt(plaintext) -> str:
     if isinstance(plaintext, str):
@@ -86,7 +97,10 @@ def _upstream_down(exc: Exception) -> Response:
                     media_type="application/json")
 
 
-app = FastAPI()
+# docs/redoc/openapi are served by THIS app, not proxied, so they answered 200
+# with no key at all on the public :8443 — verified from off-box 2026-11-13.
+# Nothing here is worth documenting publicly: the whole API is one catch-all.
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
@@ -104,10 +118,14 @@ async def proxy(path: str, request: Request):
     except (InvalidTag, ValueError, Exception):  # noqa: BLE001
         return Response(status_code=400, content=b"bad ciphertext or wrong key")
 
-    upstream_headers = {"Content-Type": "application/json"}
-    auth = request.headers.get("Authorization")
-    if auth:
-        upstream_headers["Authorization"] = auth
+    # Reached only once decrypt() succeeded above -> the caller holds the AES key.
+    # Attach our own bearer token; ignore any client-sent one. Deliberately NOT
+    # done in _passthrough: injecting there would let any unencrypted request
+    # bypass vLLM's authentication entirely.
+    upstream_headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {UPSTREAM_KEY}",
+    }
 
     is_stream = b'"stream"' in plaintext and b'"stream": false' not in plaintext \
         and b'"stream":false' not in plaintext
