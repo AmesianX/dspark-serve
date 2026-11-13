@@ -3,8 +3,9 @@
 # 재구성:  cd /home/user/work/searxng && docker compose up -d
 #
 # ⛔ 호스트 포트를 퍼블리시하지 않는다.
-#    과거: -p 192.168.1.66:8888:8080  → .66은 공유기 DMZ라서 LAN IP 바인딩이
+#    과거: -p 192.168.1.66:8888:8080  → 당시 공유기가 DMZ 라 LAN IP 바인딩이
 #    노출을 전혀 줄이지 않았고, 8888 은 인증 없이 인터넷에 열려 있었다.
+#    지금은 공유기도 80/443/2222/1194 만 포워딩한다. 그래도 퍼블리시하지 않는다.
 #
 # 유일한 외부 경로: https://searxng.systemboan.net (NPM 443, vhost 17)
 #    NPM 이 nginx-network 로 `searxng:8080` 에 직접 닿으므로 호스트 포트가 필요 없다.
