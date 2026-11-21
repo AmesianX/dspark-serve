@@ -1,0 +1,15 @@
+# 런타임 상태 — 색인 DB, 인증 토큰, pidfile
+#   state/token 은 /search 의 X-Index-Token 이다. 커밋하면 이 서비스가
+#   무인증 공개 검색 프록시가 된다.
+#   state/index.db 는 수집기가 다시 채운다 — 소스가 아니라 캐시다.
+state/
+
+# 로그
+logs/
+*.log
+
+# 파이썬
+.venv/
+__pycache__/
+*.pyc
+*.pyo

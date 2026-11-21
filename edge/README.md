@@ -75,6 +75,25 @@ Advanced 에 넣을 내용은 `edge/npm/vhost-searxng-advanced.conf` 에 주석�
 뒀으니 그대로 붙여넣고 키만 치환하면 된다. 반복해서 세울 일이 많으면 NPM 의 REST API
 (`/api/tokens` → `/api/nginx/proxy-hosts`)로 자동화할 수도 있다.
 
+⛔ **그 Advanced 블록은 `edge/npm/http.conf` 와 짝이다. 먼저 넣어라.** 블록 안의
+`proxy_cache sxng;` 는 http 레벨에서 정의된 존을 참조한다. 존 없이 붙여넣으면 nginx 가
+설정 검사에서 nginx: [emerg] "proxy_cache" zone "sxng" is unknown 으로 **거부하고 앞단 전체가 뜨지 않는다** — 관리
+UI 도 같이 죽으니 당황하기 쉽다.
+
+```bash
+# NPM data 디렉터리는 edge/nginx/docker-compose.yml 의 /data 바인드다
+#   (우리 환경: /home/user/work/nginx/data → 컨테이너 /data)
+mkdir -p <NPM data>/nginx/custom
+cp edge/npm/http.conf <NPM data>/nginx/custom/http.conf
+
+docker exec nginx-proxy-manager nginx -t        # syntax is ok 여야 한다
+docker exec nginx-proxy-manager nginx -s reload
+```
+
+캐시를 쓰지 않을 거면 반대로 맞춘다 — vhost 의 `location /search { … }` 블록을 지우면
+`http.conf` 도 필요 없다. 둘 중 하나만 넣는 상태가 유일하게 깨지는 조합이다.
+자세한 근거와 확인·비우기 절차는 아래 "/search 결과 캐시".
+
 ---
 
 ## searxng
@@ -115,8 +134,8 @@ qwant 는 막히면 예외를 던져 unresponsive 로 표시되는데, bing 은 
 | `edge/npm/http.conf` (존 정의) | 컨테이너 `/data/nginx/custom/http.conf` |
 | `edge/npm/vhost-searxng-advanced.conf` 의 `location /search` | NPM 의 해당 vhost Advanced |
 
-존 정의 없이 vhost 만 넣으면 설정 검사에서 `"sxng" zone not found` 로 **거부되고 앞단
-전체가 안 뜬다.** 캐시를 안 쓸 거면 vhost 의 `location /search` 블록도 같이 뺀다.
+존 정의 없이 vhost 만 넣으면 설정 검사에서 거부되고 **앞단 전체가 안 뜬다** (실측:
+`nginx: [emerg] "proxy_cache" zone "sxng" is unknown in /etc/nginx/nginx.conf:85`). 캐시를 안 쓸 거면 vhost 의 `location /search` 블록도 같이 뺀다.
 
 ```bash
 # 설치 (호스트 경로는 edge/nginx/docker-compose.yml 의 data 볼륨)
@@ -134,6 +153,43 @@ docker exec nginx-proxy-manager nginx -s reload
 
 GET/HEAD 만 캐시된다 — 웹 UI 의 POST 검색은 대상이 아니다. `proxy_cache_lock` 은
 에이전트가 같은 질의를 병렬로 던질 때 상류 요청을 하나로 합친다(8병렬 → 상류 1회).
+
+---
+
+## 0층 — 로컬 색인 (`websearch-index/`)
+
+검색이 막히는 근본 원인은 "질의 → 외부엔진 중계"라서 **쓸수록 더 막힌다**는 것이다.
+그래서 질의를 층으로 나눈다. 자세한 설계·실측·기동은
+[`../websearch-index/README.md`](../websearch-index/README.md).
+
+```
+0층  로컬 색인 (SQLite FTS5)      6.7~7.4ms  차단이라는 개념이 없음
+1층  기계용 공개 창구             0.6~0.9s   키 없음·차단 없음
+2층  익명 SearXNG (이 디렉터리)   1.4s       가끔 막힘
+3층  신원 브라우저                8s         자주 막힘·최후수단
+```
+
+SearXNG 에는 `json_engine` 으로 물린다. **업스트림 코드는 건드리지 않는다.**
+
+```yaml
+- name: local index     # shortcut idx  — 기본셋
+  search_url: http://172.18.0.1:8097/search?q={query}&n=20&live=0
+- name: index live      # shortcut xidx — bang 전용(밖으로 나감)
+  search_url: http://172.18.0.1:8097/search?q={query}&n=20&live=1
+```
+
+⛔ **템플릿에서 이 두 엔진은 `disabled: true` 다.** `websearch-index` 를 띄운 박스에서만
+`local index` 의 `disabled` 를 내린다. 서비스 없이 켜 두면 질의마다 unresponsive 가 되는데
+SearXNG 는 엔진 실패를 에러로 올리지 않으므로 **조용히 품질만 떨어진다** — 위 "조용히
+깨지는 것들" 과 같은 부류다.
+
+`172.18.0.1` 은 도커 브리지 게이트웨이다. 색인 서비스는 `127.0.0.1` 과 그 주소에만
+바인딩하므로 LAN·공인 IP 에서는 닿지 않는다. searxng 컨테이너에서 확인:
+
+```bash
+docker exec searxng sh -c 'wget -qO- http://172.18.0.1:8097/health'
+# {"ok": true, "port": 8097, "docs": 4269}
+```
 
 ---
 

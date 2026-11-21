@@ -1,0 +1,24 @@
+[Unit]
+# 0층 검색 색인 — HTTP (/search /stats /subs /health)
+# 2026-11-19 재부팅에 죽은 뒤 자동시작이 없어 2.5일간 조용히 멈춰 있었다.
+# 그동안 SearXNG 의 idx 엔진은 계속 실패했다. 그래서 systemd 가 소유한다.
+Description=websearch-index serve (layer 0 search API)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/user/work/dspark-serve/websearch-index
+EnvironmentFile=/home/user/work/dspark-serve/websearch-index/state/env
+ExecStart=/home/user/work/dspark-serve/websearch-index/.venv/bin/python /home/user/work/dspark-serve/websearch-index/serve.py
+Restart=always
+RestartSec=5
+# ws.sh 와 같은 캡. 이 박스는 vLLM 이 통합메모리를 점유하고 있고
+# memwatch 가 MemAvailable<3GB 에서 서빙 컨테이너를 죽인다.
+MemoryMax=600M
+MemorySwapMax=0
+StandardOutput=append:/home/user/work/dspark-serve/websearch-index/logs/serve.log
+StandardError=append:/home/user/work/dspark-serve/websearch-index/logs/serve.log
+
+[Install]
+WantedBy=default.target

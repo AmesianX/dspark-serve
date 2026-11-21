@@ -1,0 +1,20 @@
+[Unit]
+# 상시 수집기 — 0층을 채운다. 이게 멈추면 "쓸수록 덜 막힌다"의 전제가 깨진다.
+Description=websearch-index collector (layer 0 feeder)
+After=websearch-index.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/user/work/dspark-serve/websearch-index
+EnvironmentFile=/home/user/work/dspark-serve/websearch-index/state/env
+ExecStart=/home/user/work/dspark-serve/websearch-index/.venv/bin/python /home/user/work/dspark-serve/websearch-index/collect.py --interval 600
+Restart=always
+RestartSec=30
+MemoryMax=600M
+MemorySwapMax=0
+StandardOutput=append:/home/user/work/dspark-serve/websearch-index/logs/collect.log
+StandardError=append:/home/user/work/dspark-serve/websearch-index/logs/collect.log
+
+[Install]
+WantedBy=default.target

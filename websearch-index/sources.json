@@ -1,0 +1,37 @@
+{
+  "_주": "0층 상시 수집 대상. 전부 '기계를 위해 공개된' 창구다. 실패하면 feeds 테이블에 기록되고 자동으로 덜 때린다.",
+  "feeds": [
+    ["arXiv cs.CL",      "https://rss.arxiv.org/rss/cs.CL"],
+    ["arXiv cs.LG",      "https://rss.arxiv.org/rss/cs.LG"],
+    ["arXiv cs.DC",      "https://rss.arxiv.org/rss/cs.DC"],
+    ["arXiv cs.AI",      "https://rss.arxiv.org/rss/cs.AI"],
+    ["arXiv cs.CR",      "https://rss.arxiv.org/rss/cs.CR"],
+    ["arXiv cs.SE",      "https://rss.arxiv.org/rss/cs.SE"],
+
+    ["연합뉴스",          "https://www.yna.co.kr/rss/news.xml"],
+    ["전자신문",          "https://rss.etnews.com/Section901.xml"],
+    ["한겨레",            "https://www.hani.co.kr/rss/"],
+    ["보안뉴스",          "https://www.boannews.com/media/news_rss.xml"],
+
+    ["The Hacker News",  "https://feeds.feedburner.com/TheHackersNews"],
+    ["BleepingComputer", "https://www.bleepingcomputer.com/feed/"],
+    ["Krebs",            "https://krebsonsecurity.com/feed/"],
+    ["PortSwigger",      "https://portswigger.net/research/rss"],
+    ["Project Zero",     "https://googleprojectzero.blogspot.com/feeds/posts/default"],
+
+    ["LWN",              "https://lwn.net/headlines/newrss"],
+    ["Phoronix",         "https://www.phoronix.com/rss.php"],
+    ["HN front",         "https://news.ycombinator.com/rss"],
+    ["Lobsters",         "https://lobste.rs/rss"],
+
+    ["vLLM releases",    "https://github.com/vllm-project/vllm/releases.atom"],
+    ["llama.cpp rel",    "https://github.com/ggml-org/llama.cpp/releases.atom"],
+    ["exllamav3 rel",    "https://github.com/turboderp-org/exllamav3/releases.atom"],
+    ["TensorRT-LLM rel", "https://github.com/NVIDIA/TensorRT-LLM/releases.atom"],
+    ["SearXNG rel",      "https://github.com/searxng/searxng/releases.atom"],
+    ["Playwright rel",   "https://github.com/microsoft/playwright/releases.atom"],
+
+    ["HuggingFace blog", "https://huggingface.co/blog/feed.xml"],
+    ["PyPI updates",     "https://pypi.org/rss/updates.xml"]
+  ]
+}

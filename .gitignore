@@ -47,3 +47,9 @@ build/
 glm53-exl3-lane/glm53-serve.env
 solar-open2-lane/solar-serve.env
 gateway.env
+
+# websearch-index (0층 검색) 런타임 — state/token 은 /search 의 X-Index-Token 이고
+# 공개되면 무인증 검색 프록시가 된다. index.db 는 수집기가 다시 채우는 캐시다.
+websearch-index/state/
+websearch-index/logs/
+websearch-index/.venv/

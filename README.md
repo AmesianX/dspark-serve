@@ -1,27 +1,5 @@
 # GLM-5.3-Flash on 2× DGX Spark — dspark-serve
 
-> ## ⚠️ 고지 · Disclaimer
->
-> 이 저장소는 **있는 그대로(as-is)** 공개됩니다. 어떤 보증도 하지 않습니다.
->
-> - 이 코드를 사용해 발생하는 **모든 결과와 책임은 사용자 본인**에게 있습니다.
->   데이터 손실, 장비 손상, 비용 발생, 서비스 중단, 법적 분쟁 — 무엇이든
->   작성자는 책임지지 않습니다.
-> - 운영 환경에 그대로 올리라고 만든 물건이 아닙니다. **본인 환경에서 직접
->   검증한 뒤** 쓰세요.
-> - 관할 **법령과 제3자 약관(모델·API·서비스 라이선스 포함)을 지킬 책임은
->   전적으로 사용자**에게 있습니다.
-> - 문서에 적힌 주소·설정·수치는 작성자의 환경 기준입니다. 그대로 복사해 쓰지 마세요.
-> - 이 구성에는 모델의 응답 거부 동작을 요청 단위로 바꾸는 스위치가 포함돼
-  있습니다. **연구·평가 목적**으로 공개하며, 그 기능으로 생성된 출력과
-  그 사용에 대한 책임은 전적으로 사용자에게 있습니다.
->
-> *Provided **as-is**, without warranty of any kind. You bear sole responsibility
-> for any use and for compliance with applicable laws and third-party terms.
-> See [LICENSE](LICENSE).*
-
----
-
 DGX Spark(GB10) **두 대**를 200GbE 레일로 묶어 **GLM-5.3-Flash**(4bpw EXL3)를 vLLM으로 서빙하는 구성이다.
 컨텍스트 512K, 동시 4요청, OpenAI 호환 API. 원본 모델을 서빙하면서 **검열 해제를 요청 단위로 실시간 전환**한다.
 
@@ -30,7 +8,7 @@ DGX Spark(GB10) **두 대**를 200GbE 레일로 묶어 **GLM-5.3-Flash**(4bpw EX
 
 | 문서 | 내용 |
 |---|---|
-| **이 README** | 구조, 우리 구성의 차이점, **새로 설치하기** |
+| **이 README** | 구조, 우리 구성의 차이점, **새로 설치하기**, **구버전(09-05 키트)에서 업그레이드하기** |
 | [`glm53-exl3-lane/README.md`](glm53-exl3-lane/README.md) | 운영 명령, 설정 노브, 실측 원장, 변경 절차 |
 | [`glm53-exl3-lane/HANDOFF.md`](glm53-exl3-lane/HANDOFF.md) | 패치별 원리와 함정(개발자용) |
 | [`glm53-exl3-lane/AB-SWITCH.md`](glm53-exl3-lane/AB-SWITCH.md) | 실시간 검열 해제 스위치 상세 |
@@ -63,9 +41,13 @@ DGX Spark(GB10) **두 대**를 200GbE 레일로 묶어 **GLM-5.3-Flash**(4bpw EX
 - **조작은 스크립트 하나**: 헤드에서 `glm53-exl3-lane/vllm-glm53-exl3.sh RESTARTALL`.
   양 노드 정지 → 메모리 감시기 → 워커 기동 → 헤드 기동 → READY 대기까지 한 번에 한다.
 - 디코딩: MTP-4 스펙 디코딩(모델 내장 MTP 헤드). KV 캐시 FP8(`fp8_ds_mla`), 프리픽스 캐시 사용.
-- **외부 노출면은 `edge/`**: Nginx Proxy Manager(443/80) + searxng. 서빙 박스가 공유기 DMZ 안에 있으면
-  LAN IP 바인딩은 보안이 아니다 — 포트를 퍼블리시하지 않는 것이 유일한 차단이다.
+- **외부 노출면은 `edge/`**: Nginx Proxy Manager(443/80) + searxng. `.66` 은 공유기 DMZ 안이라
+  LAN IP 바인딩이 보안이 아니다 — 포트를 퍼블리시하지 않는 것이 유일한 차단이다.
   포트 정책·재구성 순서·NPM 관리 UI 의 SSH 터널 접속은 [`edge/README.md`](edge/README.md).
+- **검색 0층은 `websearch-index/`**: 로컬 색인(SQLite FTS5, 6.7~7.4ms)을 SearXNG 앞에 둔다.
+  외부엔진 중계만 하면 쓸수록 막히므로, 받아온 것을 영구 적재하고 두 번 물은 주제는
+  구독으로 승격해 **쓸수록 무차단 영역이 넓어지게** 한다. 설계·참고값·기동은
+  [`websearch-index/README.md`](websearch-index/README.md).
 
 ## 2. 우리 구성이 순정 킷과 다른 점
 
@@ -92,7 +74,7 @@ DFlash2 드래프터(산문에서 MTP-4보다 느림). 이유는 레인 README �
 ## 3. 실시간 검열 해제 스위치 (`/ab`) — 우리만의 구조
 
 abliteration(검열 제거) 모델을 통째로 서빙하면 거부만 사라지는 게 아니라 **"없는 것은 없다"고 말하는 능력도 같이
-사라진다.** 가짜 대상 60건 함정에서 원본은 4건, abliterated는 18\~22건을 지어냈다. 그래서 우리는 **원본을 서빙하고,
+사라진다.** 가짜 대상 60건 함정에서 원본은 4건, abliterated는 18~22건을 지어냈다. 그래서 우리는 **원본을 서빙하고,
 검열 해제는 필요한 순간에만 켠다.**
 
 원리: abliteration이 건드린 것은 `self_attn.o_proj` 45개뿐이고, 이 텐서는 4bpw 체크포인트에서도 BF16이다.
@@ -112,7 +94,7 @@ curl -X POST -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json'
 curl -X POST ... -d '{"scale":0}' http://<헤드>:8000/ab                         # OFF (기본)
 ```
 
-실측: 중립 타깃 16문항 거부 5건 → 0건, 속도 손실 스텝당 1\~2ms, temperature 0 결정성 양쪽 모두 유지.
+실측: 중립 타깃 16문항 거부 5건 → 0건, 속도 손실 스텝당 1~2ms, temperature 0 결정성 양쪽 모두 유지.
 codemason 클라이언트는 `/ab auto`로 "요청을 승낙하는 턴"에만 켜고 도구 호출이 시작되면 끈다. 상세는 [AB-SWITCH.md](glm53-exl3-lane/AB-SWITCH.md).
 
 ## 4. 마지막 버그: '!' 붕괴 (2026-10-02 해결)
@@ -213,7 +195,7 @@ ssh <워커> 'mkdir -p ~/work/dspark-serve'
 
 ### 5.4 사이트 값 설정
 
-설정 파일은 **키가 들어가므로 git 에 추적하지 않는다**. 템플릿을 복사해서 쓴다.
+설정 파일은 **키가 들어가므로 git 에 추적하지 않는다**(이 저장소는 공개). 템플릿을 복사해서 쓴다.
 
 ```bash
 cd ~/work/dspark-serve/glm53-exl3-lane
@@ -234,11 +216,13 @@ chmod 600 glm53-serve.env
 
 RoCE GID 인덱스는 런처가 sysfs에서 자동으로 찾는다. 직접 정하지 말 것.
 
-`glm53-serve.env` 자체는 `.gitignore` 에 있으므로 커밋하지 않는다 — 워커로는 rsync 가 그대로
-복사한다(`sync-lane-67.sh` 는 `git status --porcelain` 만 검사하고, 무시된 파일은 거기 나타나지 않는다).
+`glm53-serve.env` 자체는 `.gitignore` 에 있으므로 커밋하지 않는다 — 워커로는 rsync 가
+그대로 복사한다(`sync-lane-67.sh` 는 `git status --porcelain` 만 검사하고, 무시된 파일은
+거기 나타나지 않는다).
 
-레인의 **다른** 파일을 고쳤다면 커밋해 둔다(워커로 밀 때 동기화 스크립트가 커밋되지 않은 변경을 거부한다). 새 박스에는 git 사용자
-정보가 없어 커밋이 실패하므로 이 저장소에 한 번 정해 둔다(값은 아무거나 상관없다).
+레인의 **다른** 파일을 고쳤다면 커밋해 둔다(워커로 밀 때 동기화 스크립트가 커밋되지 않은
+변경을 거부한다 — 실험 기록이 git 에 남아야 되돌릴 수 있다). 새 박스에는 git 사용자 정보가
+없어 커밋이 실패하므로 이 저장소에 한 번 정해 둔다(값은 아무거나 상관없다).
 
 ```bash
 cd ~/work/dspark-serve/glm53-exl3-lane
@@ -296,7 +280,7 @@ cd ~/work/dspark-serve/glm53-exl3-lane
 ./vllm-glm53-exl3.sh RESTARTALL
 ```
 
-READY까지 약 3\~4분. 마지막에 `✅ API READY ... 원본 + /ab off` 가 찍히면 성공이다.
+READY까지 약 3~4분. 마지막에 `✅ API READY ... 원본 + /ab off` 가 찍히면 성공이다.
 처음 기동은 JIT 컴파일 캐시(`~/glm53-vllm-cache`)를 만드느라 첫 요청이 느리다.
 
 > `sync-lane-67.sh` 는 커밋되지 않은 변경이 있으면 거부한다(§5.4에서 커밋했으면 그대로 된다).
@@ -320,10 +304,11 @@ curl http://localhost:8000/v1/chat/completions -H "Authorization: Bearer <키>" 
 
 ### 5.8 암호화 게이트 `:8443` (원격에서 쓸 때만)
 
-`encrypt_gateway.py` 는 vLLM 앞에 서서 **요청/응답 본문**을 AES-256-GCM 으로 주고받는다.
-평문 HTTP 위에서도 본문이 암호문이고, 키는 네트워크로 가지 않는다 — 소유 자체가 자격증명이다.
-복호가 되면 키 보유가 증명되므로, 그때 게이트가 vLLM 베어러 토큰을 **대신 붙인다**. 따라서
-클라이언트는 vLLM 키를 갖고 있지 않아도 되고, 평문 HTTP 에 베어러 토큰을 흘리지도 않는다.
+`encrypt_gateway.py` 는 vLLM 앞에 서서 **요청/응답 본문**을 AES-256-GCM 으로
+주고받는다. 평문 HTTP 위에서도 본문이 암호문이고, 키는 네트워크로 가지 않는다
+(소유 자체가 자격증명 — 복호가 되면 키 보유가 증명되므로, 그때 게이트가 vLLM
+베어러 토큰을 **대신 붙인다**). 그래서 클라이언트는 vLLM 키를 갖고 있지 않아도 되고,
+평문 HTTP 에 베어러 토큰을 흘리지도 않는다.
 
 ```bash
 cd ~/work/dspark-serve
@@ -333,19 +318,56 @@ python3 -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())"  
 ./run-gateway.sh status
 ```
 
-클라이언트 설정에 같은 AES 키를 넣는다. 베이스 URL 은 `http://<주소>:8443`(또는 그 앞의 TLS vhost).
+클라이언트(`~/.codemason/config.json`)에 같은 키를 넣는다:
 
-- `gateway.env` 는 `.gitignore` 에 있다. **커밋하지 말 것** — 공개 저장소에 올라간 키는
+| 키 | 값 |
+|---|---|
+| `llamacpp_aes_key` | `gateway.env` 의 `LLAMACPP_AES_KEY` 와 **동일** |
+| `llamacpp_base_url` | `http://<공인주소>:8443` (또는 그 앞의 TLS vhost) |
+
+- `gateway.env` 는 `.gitignore` 에 있다. **커밋하지 말 것** — 2026-11-13 까지
+  이 키가 `run-gateway.sh` 에 평문으로 커밋돼 있었고, 공개 리포에 올라간 키는
   게이트 전체를 무력화한다.
 - 게이트는 `/docs`·`/openapi.json` 을 서빙하지 않는다(`FastAPI(docs_url=None, ...)`).
-- ⛔ `_passthrough` 에 `Authorization` 을 주입하지 말 것. 거기 주입하면 암호화하지 않은
-  요청이 vLLM 인증을 그대로 우회한다.
+  예전엔 그 경로가 무인증 200 이었다.
+- ⛔ `_passthrough` 에 `Authorization` 을 주입하지 말 것. 거기 주입하면 암호화하지
+  않은 요청이 vLLM 인증을 그대로 우회한다.
 
 ---
 
-<details>
-<summary><b>6. 구버전(09-05 인수인계 키트)에서 업그레이드하기</b> — 펼쳐서 보기</summary>
+### 5.9 검색 (거의 틀림없이 가장 많이 쓰게 된다)
 
+LLM 서버를 세우면 **실제로 가장 많이 돌리는 기능은 검색**이다. 모델이 모르는 것·최신
+정보·링크 확인이 전부 검색으로 간다. 그래서 여기까지 왔으면 검색을 세우는 것이 남은
+일 중 가치가 가장 크다.
+
+```bash
+# 1) searxng + NPM (키 게이트·포트 정책·ACME) — 자세히는 edge/README.md
+./searxng-serve.sh start
+./searxng-serve.sh test        # 세 줄 다 ✅ 여야 한다. "키 없이 403" 이 아니면 멈춘다
+
+# 2) 클라이언트에 주소와 키를 넣는다 (머신마다 따로 산다)
+#    ~/.codemason/config.json 의 searxng_url · searxng_api_key
+
+# 3) 0층 로컬 색인 — 쓸수록 덜 막히게 만드는 부분
+cd websearch-index && ./ws.sh collect       # 첫 수집
+cp systemd/websearch-*.service ~/.config/systemd/user/
+sudo loginctl enable-linger $USER
+systemctl --user daemon-reload
+systemctl --user enable --now websearch-index websearch-collect
+./ws.sh search vllm                        # 20건 / 7ms 정도면 제대로 선 것
+```
+
+**검색은 고장나도 조용하다.** 키가 어긋나거나 `formats` 에 `json` 이 없거나 인증서가
+만료되면 **에러 없이 ddgs 단일 소스로 폴백**하고 결과 품질만 떨어진다. 실제로 인증서
+만료로 25일간 폴백한 적이 있다. 그래서 세운 뒤에도 주기적으로 `test` 를 돌린다.
+
+- 외부 노출면·포트 정책·vhost·캐시: [`edge/README.md`](edge/README.md)
+- 0층 설계·참고값·KPI: [`websearch-index/README.md`](websearch-index/README.md)
+
+---
+
+## 6. 구버전(09-05 인수인계 키트)에서 업그레이드하기
 
 2026-09-05에 전달한 `glm53-flash-2xspark-kit` 으로 설치해 쓰고 있다면, 그때는 **abliterated 모델이 기본**이었다.
 그 뒤로 바뀐 것이 많아서(위 §2 대부분, 원본 + 실시간 스위치 구조, 경로 정리) **변경분을 따라가지 말고 레인을 통째로
@@ -407,8 +429,6 @@ curl -s -H "Authorization: Bearer <키>" http://localhost:8000/ab   # "mode":"or
 원본의 76개 샤드가 그 파일과 하드링크를 공유한다(지워도 원본 쪽은 남지만, 어댑터를 다시 만들 때 필요하다).
 
 ---
-
-</details>
 
 ## 7. 자주 하는 실수
 
