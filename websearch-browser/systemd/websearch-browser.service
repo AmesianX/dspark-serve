@@ -1,0 +1,27 @@
+[Unit]
+# 3층 신원 브라우저 레인 — SearXNG 가 json_engine 으로 172.18.0.1:8099 에 닿는다.
+# ⛔ 이 유닛의 경로는 우리 환경 절대경로다. 다른 박스면 WorkingDirectory·ExecStart·
+#    EnvironmentFile·StandardOutput·StandardError 를 자기 경로로 바꿀 것.
+Description=websearch-browser lane (layer 3, identity-bearing search)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/user/work/dspark-serve/websearch-browser
+EnvironmentFile=/home/user/work/dspark-serve/websearch-browser/state/env
+# headless-shell 은 UA 에 HeadlessChrome 이 박히므로 headful + xvfb 로 돈다.
+ExecStart=/usr/bin/xvfb-run -a /home/user/work/dspark-serve/websearch-browser/.venv/bin/python /home/user/work/dspark-serve/websearch-browser/lane.py
+Restart=always
+RestartSec=10
+# ⛔ 캡은 필수다. GB10 은 통합메모리라 OOM 이 나면 박스 전체가 죽는다. vLLM 이
+#    113GB 를 쥐고 있고 가용은 ~5GB. 캡이 있으면 레인만 죽고 박스는 산다.
+#    브라우저는 상주하지 않는다 — 유휴 LANE_IDLE_EXIT(기본 180s)에 죽고 다음
+#    질의에 다시 뜨므로, 평상시 점유는 파이썬 서버뿐이다.
+MemoryMax=1500M
+MemorySwapMax=0
+StandardOutput=append:/home/user/work/dspark-serve/websearch-browser/state/lane.log
+StandardError=append:/home/user/work/dspark-serve/websearch-browser/state/lane.log
+
+[Install]
+WantedBy=default.target

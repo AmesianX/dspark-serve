@@ -1,0 +1,19 @@
+# ⛔ 신원 데이터 — 절대 커밋하지 않는다.
+#    identities/<name>/ 과 profile/ 은 Chromium user-data-dir 이다. 쿠키(NID,
+#    _GRECAPTCHA, cf_clearance 등)가 들어 있고, 그게 곧 이 레인의 자격증명이다.
+#    공개되면 신원을 그대로 탈취당하고, 태우고 새로 만들어야 한다.
+identities/
+profile/
+
+# 런타임 상태 — 챌린지 스크린샷, 유예 타이머, 토큰
+state/
+
+# 파이썬
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# 로그
+logs/
+*.log

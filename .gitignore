@@ -53,3 +53,12 @@ gateway.env
 websearch-index/state/
 websearch-index/logs/
 websearch-index/.venv/
+
+# websearch-browser (3층 신원 브라우저) — ⛔ 신원 데이터는 절대 커밋하지 않는다.
+#   identities/<name>/ 과 profile/ 은 Chromium user-data-dir 이다. 쿠키(NID,
+#   _GRECAPTCHA, cf_clearance)가 곧 이 레인의 자격증명이고, 공개되면 신원을
+#   그대로 탈취당한다. state/token 은 /search 의 X-Lane-Token 이다.
+websearch-browser/identities/
+websearch-browser/profile/
+websearch-browser/state/
+websearch-browser/.venv/

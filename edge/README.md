@@ -178,6 +178,11 @@ SearXNG 에는 `json_engine` 으로 물린다. **업스트림 코드는 건드�
   search_url: http://172.18.0.1:8097/search?q={query}&n=20&live=1
 ```
 
+3층(신원 브라우저)은 [`../websearch-browser/DESIGN.md`](../websearch-browser/DESIGN.md).
+`google browser`·`brave browser`·`qwant browser` 세 엔진이 `172.18.0.1:8099` 로 물리고,
+**bang 전용**(`!gbr`)이다 — 기본셋에 넣으면 모든 질의가 8초 경로를 타고 질의 수가 늘어
+차단만 앞당긴다. 적게 쓰는 게 목표인 층이다.
+
 ⛔ **템플릿에서 이 두 엔진은 `disabled: true` 다.** `websearch-index` 를 띄운 박스에서만
 `local index` 의 `disabled` 를 내린다. 서비스 없이 켜 두면 질의마다 unresponsive 가 되는데
 SearXNG 는 엔진 실패를 에러로 올리지 않으므로 **조용히 품질만 떨어진다** — 위 "조용히

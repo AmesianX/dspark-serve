@@ -364,6 +364,7 @@ systemctl --user enable --now websearch-index websearch-collect
 
 - 외부 노출면·포트 정책·vhost·캐시: [`edge/README.md`](edge/README.md)
 - 0층 설계·참고값·KPI: [`websearch-index/README.md`](websearch-index/README.md)
+- 3층(신원 브라우저, bang 전용·선택): [`websearch-browser/DESIGN.md`](websearch-browser/DESIGN.md)
 
 ---
 
