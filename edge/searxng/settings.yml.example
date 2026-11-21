@@ -1,18 +1,82 @@
 # codemason 자동 생성 — SearXNG 설정. 기본값 위에 필요한 것만 덮어쓴다.
+#
+# 2026-11-17 개편 + 11-18 정정.
+#
+# [1층: 요청 지문]  이미지가 2026-07-19 판이라 네트워크 스택이 httpx 였다 →
+#   엔진 요청의 TLS/HTTP2 지문이 "파이썬"으로 찍혀 봇탐지에 걸렸다. 업스트림은
+#   그 뒤 curl_cffi(curl-impersonate)로 갈아탔고 기본 impersonate 타깃이
+#   "chrome" 이다 → 이미지만 올려도 해결. 실측 20건/1엔진 → 44건/4~5엔진.
+#   ⛔ 이미지를 7월 판으로 되돌리지 말 것. 지문이 다시 파이썬이 된다.
+#
+# [2층: 진짜 벽 = IP당 질의 수]  지문을 고쳐도 벽이 남는다. 2026-11-18 실측:
+#   같은 IP에서 '사람 흉내 낸 실제 Chromium'(headful+영속프로필+webdriver은닉
+#   +홈 선방문)으로 google 유기적 결과 9건을 받았고 난수 질의엔 0건이었다.
+#   그런데 몇 질의 더 넣자 google 이 429 /sorry 에 우리 IP(<우리 공인IP>)를
+#   적어 돌려줬다. brave 도 10분/15질의로 몇 시간 잠겼고 브라우저로도 안 풀렸다.
+#   → 막는 기준은 "봇이냐"가 아니라 "양"이다. 사람은 시간당 몇 질의, AI는
+#      질문 하나에 질의 3개 × 엔진 5개를 분 단위로 쏜다.
+#   → 그래서 `google cse` 만 전부 통과해 살아남았다. 그건 스크레이핑이 아니라
+#      API 경로라서 레이트 예산을 받아서 쓴다.
+#   → 대응: (a) NPM vhost 17 에 /search 결과 캐시 30분 + proxy_cache_lock
+#            (동일 질의 8병렬 → 상류 1회. MISS 1.4s / HIT 0.05s)
+#           (b) 결과 못 주는 엔진 전부 끔 (아래)
+#           (c) 남은 레버는 출구 IP 분산뿐. 지문 위장으로는 더 못 간다.
 use_default_settings: true
+
 general:
   instance_name: "codemason-searxng"
+  # wikipedia/wikidata/openstreetmap 는 이제 contact_url 없으면 기동 시 등록 실패한다
+  # (위키미디어 User-Agent 정책). 없애면 그 엔진들이 통째로 사라진다.
+  contact_url: "https://searxng.<도메인>/"   # 실제 도메인으로 바꿀 것
+
 server:
-  secret_key: "__GENERATE_WITH_openssl_rand_hex_32__"
+  secret_key: "CHANGE_ME"   # 반드시 새로 만들 것: openssl rand -hex 32
   limiter: false
   image_proxy: false
+
 search:
   formats:
     - html
     - json
-# 일반 검색 다양화: 취약 4개(brave/ddg/google_cse/startpage)가 동시에 막혀도
-# 아래 견고/독립 엔진들이 결과를 받치도록. 고장난 startpage는 끔.
+
 engines:
+  # ── 살아있는 엔진 (2026-11-17 실측) ────────────────────────────────────
+  # brave        : 품질 1위. 단 IP당 레이트리밋이 빡세서 연속 질의 시 429.
+  #                쿼터가 필요하면 `braveapi`(공식 API, 유료)로 갈아탈 것.
+  # duckduckgo web: HTML 엔드포인트. JS 엔드포인트(duckduckgo)와 달리 CAPTCHA 안 뜸.
+  # google cse   : 키 불필요(공용 CX). 가장 꾸준함. 한국어도 양호.
+  # yahoo        : bing 계열 백업. 가끔 500.
+  # mwmbl        : 독립 크롤러, 레이트리밋 없음. 결과량이 많다.
+  # wikipedia    : contact_url 설정 후 정상.
+  - name: duckduckgo web
+    engine: duckduckgo_web
+    shortcut: ddgw
+    disabled: false
+  - name: yahoo
+    disabled: false
+  - name: mwmbl
+    disabled: false
+
+  # wikidata : 끔. server-timing 실측에서 혼자 2,139ms 로 검색 전체의 꼬리를
+  #            만들었다(나머지는 804~1,196ms). 구조화 엔티티라 기술 검색에
+  #            기여가 거의 없는데 질의 예산 1개 + 지연 1초를 먹는다.
+  - name: wikidata
+    disabled: true
+  # ── 끈 엔진: 전부 "결과를 못 주면서 타임아웃만 먹던" 것들 ──────────────
+  # duckduckgo(JS) : CAPTCHA (wt-wt). duckduckgo web 이 대체하므로 끈다.
+  - name: duckduckgo
+    disabled: true
+  # yep : api.yep.com 이 404. 업스트림 엔진이 죽어 있다(우리 IP 문제 아님).
+  - name: yep
+    disabled: true
+  # qwant : 우리 IP에 403 Access denied. 업스트림도 기본 disabled.
+  - name: qwant
+    disabled: true
+  # mojeek : 업스트림이 inactive 로 바꿈 — PoW CAPTCHA 라 서버에선 못 푼다.
+  #          (예전 설정의 `disabled: false` 는 이미 무효였다)
+  # presearch : 업스트림에서 엔진 자체가 삭제됨. 이름을 쓰면 기동이 깨진다.
+  # google(스크레이퍼) : 403. impersonate 로도 안 뚫린다(동의/JS 플로우 필요).
+  #          업스트림 기본값이 disabled 이므로 건드리지 않는다.
   - name: startpage
     disabled: true
   # ⛔ bing 비활성 (2026-08-02). '메인 백본'이었으나 검색 자체를 하지 않는 상태로
@@ -28,21 +92,133 @@ engines:
   #    되살리려면 먼저 난수 질의로 0건이 나오는지 검증할 것.
   - name: bing
     disabled: true
-  - name: yahoo           # bing 계열, 안정적 백업
-    disabled: false
-  - name: mwmbl           # 독립 크롤러, 레이트리밋 없음
-    disabled: false
-  - name: yep             # 독립 색인(Ahrefs). 영문은 양호, 한국어는 관련성 낮음
-    disabled: false
-  - name: presearch       # 독립
-    disabled: false
-  - name: wikipedia
-    disabled: false
-  - name: mojeek          # 자체 색인(가끔 access denied지만 켜둠)
-    disabled: false
-  - name: qwant
-    disabled: false
-  - name: duckduckgo
-    disabled: false
-  - name: brave
-    disabled: false
+
+  # ── browser-lane (신원 있는 레인) ───────────────────────────────────────
+  # 왜: SearXNG 는 client.py:93 에서 쿠키를 하드코딩으로 버린다(= 익명). 그게
+  #     이 도구의 존재 이유지만, google/brave/qwant 는 신원 없는 방문자를 막는다.
+  #     그래서 익명성은 그대로 두고, 신원이 필요한 엔진만 별도 레인으로 뺐다.
+  #     레인은 영속 Chromium 프로필(= 감사 가능한 쿠키 묶음)을 들고 나간다.
+  #     설계·운영: ~/work/websearch-browser/DESIGN.md
+  #
+  # ⛔ 전부 disabled: true 로 둔다. 이건 "쓰지 말라"가 아니라 **기본 검색에서
+  #    빼라**는 뜻이다. SearXNG 는 모든 엔진을 기다리므로, 브라우저 엔진(5~8초)을
+  #    기본셋에 넣으면 **모든 검색이 그만큼 느려진다**. bang 으로 필요할 때만 쓴다:
+  #       !gbr io_uring documentation     (google)
+  #       !bbr ...  !qbr ...
+  #
+  # 레인이 꺼져 있으면 해당 엔진만 실패하고 SearXNG 가 알아서 suspend 한다.
+  - name: google browser
+    engine: json_engine
+    shortcut: gbr
+    categories: [general, web]
+    search_url: http://172.18.0.1:8099/search?q={query}&engine=google&n=10
+    results_query: results
+    url_query: url
+    title_query: title
+    content_query: content
+    # ⛔ 이 엔진 전용 네트워크. 두 가지를 바꿔야 붙는다:
+    #    - enable_http  : 레인은 172.18.0.1(docker bridge) 평문. 업스트림 기본은 HTTPS 전용.
+    #    - enable_http2 : SearXNG 는 평문에도 HTTP/2(prior-knowledge)로 붙는데 레인은
+    #      파이썬 http.server 라 H2 를 못 한다 → curl exit 16 → SearXNG 가
+    #      "unexpected crash" 로 보고. 실측: --http1.1 200 / --http2-prior-knowledge 000 exit=16.
+    network:
+      enable_http: true
+      enable_http2: false
+    headers:
+      X-Lane-Token: "__LANE_TOKEN__"
+    disabled: true
+    # ⚠️ google 은 결과 URL 을 /goto?url=<불투명토큰> 으로 감싼다. href·ping·DOM
+    #    어디에도 실제 URL 이 없다(2026-11-18 확인). 링크는 정상 동작하지만
+    #    최종 주소는 클릭(=fetch) 시점에 풀린다. 그래서 다른 엔진 결과와 URL
+    #    중복제거가 안 된다. 제목·요약·호스트는 정확하다.
+  - name: brave browser
+    engine: json_engine
+    shortcut: bbr
+    categories: [general, web]
+    search_url: http://172.18.0.1:8099/search?q={query}&engine=brave&n=10
+    results_query: results
+    url_query: url
+    title_query: title
+    content_query: content
+    # ⛔ 이 엔진 전용 네트워크. 두 가지를 바꿔야 붙는다:
+    #    - enable_http  : 레인은 172.18.0.1(docker bridge) 평문. 업스트림 기본은 HTTPS 전용.
+    #    - enable_http2 : SearXNG 는 평문에도 HTTP/2(prior-knowledge)로 붙는데 레인은
+    #      파이썬 http.server 라 H2 를 못 한다 → curl exit 16 → SearXNG 가
+    #      "unexpected crash" 로 보고. 실측: --http1.1 200 / --http2-prior-knowledge 000 exit=16.
+    network:
+      enable_http: true
+      enable_http2: false
+    headers:
+      X-Lane-Token: "__LANE_TOKEN__"
+    disabled: true
+  - name: qwant browser
+    engine: json_engine
+    shortcut: qbr
+    categories: [general, web]
+    search_url: http://172.18.0.1:8099/search?q={query}&engine=qwant&n=10
+    results_query: results
+    url_query: url
+    title_query: title
+    content_query: content
+    # ⛔ 이 엔진 전용 네트워크. 두 가지를 바꿔야 붙는다:
+    #    - enable_http  : 레인은 172.18.0.1(docker bridge) 평문. 업스트림 기본은 HTTPS 전용.
+    #    - enable_http2 : SearXNG 는 평문에도 HTTP/2(prior-knowledge)로 붙는데 레인은
+    #      파이썬 http.server 라 H2 를 못 한다 → curl exit 16 → SearXNG 가
+    #      "unexpected crash" 로 보고. 실측: --http1.1 200 / --http2-prior-knowledge 000 exit=16.
+    network:
+      enable_http: true
+      enable_http2: false
+    headers:
+      X-Lane-Token: "__LANE_TOKEN__"
+    disabled: true
+  # ── websearch-index (0층 로컬 색인 / 1층 기계용 공개창구) ─────────────────
+  #  ~/work/websearch-index/ · 상세는 그 안의 README.md
+  #
+  #  왜 이게 기본셋에 들어가 있나:
+  #   - live=0 이라 **외부로 한 번도 안 나간다**. 로컬 SQLite FTS5 만 본다.
+  #     실측 2.7ms — 검색 전체 지연에 사실상 영향 없음(기존 1.4초).
+  #   - 차단이라는 개념이 존재하지 않는다. 막힐 수가 없다.
+  #   - ⭐ 부수효과가 본체다: 평소 검색 질의가 전부 기록되고, 같은 주제를 두 번
+  #     물으면 Google News RSS 구독으로 **승격**된다. 그때부터 그 주제는 영구히
+  #     0층에서 나온다. 즉 **쓸수록 막히는 영역이 줄어든다.**
+  # ⛔ 아래 두 엔진은 이 리포에 없는 별도 서비스(:8097)를 가리킨다. 그 서비스가
+  #    없으면 질의마다 unresponsive 가 되고, SearXNG 는 에러를 내지 않아 조용히
+  #    품질만 떨어진다. 서비스를 띄운 박스에서만 disabled 를 내릴 것.
+  - name: local index
+    engine: json_engine
+    shortcut: idx
+    disabled: true
+    categories: [general, web]
+    search_url: http://172.18.0.1:8097/search?q={query}&n=20&live=0
+    results_query: results
+    url_query: url
+    title_query: title
+    content_query: content
+    # ⛔ 평문 + HTTP/1.1 강제. 안 하면 둘 다 "unexpected crash" 로만 보인다
+    #    (브라우저 레인에서 밟은 함정과 동일 — 파이썬 http.server 는 H2 불가).
+    network:
+      enable_http: true
+      enable_http2: false
+    headers:
+      X-Index-Token: "__INDEX_TOKEN__"
+    timeout: 3.0
+
+  # 1층까지 포함한 전층 검색. 밖으로 나가므로 bang 전용(!xidx).
+  #  0층이 모자랄 때만 GoogleNews RSS·HN·GitHub·StackExchange·Wikipedia 를
+  #  병렬로 때리고, 받아온 것은 전부 색인에 적재한다(다음부터 0층).
+  - name: index live
+    engine: json_engine
+    shortcut: xidx
+    categories: [general, web]
+    search_url: http://172.18.0.1:8097/search?q={query}&n=20&live=1
+    results_query: results
+    url_query: url
+    title_query: title
+    content_query: content
+    network:
+      enable_http: true
+      enable_http2: false
+    headers:
+      X-Index-Token: "__INDEX_TOKEN__"
+    timeout: 15.0
+    disabled: true

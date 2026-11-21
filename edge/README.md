@@ -101,6 +101,42 @@ qwant 는 막히면 예외를 던져 unresponsive 로 표시되는데, bing 은 
 
 ---
 
+## /search 결과 캐시 (2026-11-18)
+
+엔진 차단의 실제 제약은 요청 "모양"이 아니라 **IP당 질의 수** 였다. 실측 — 같은 IP
+에서 실브라우저로 google 유기적 결과 9건을 받았는데, 몇 질의 더 넣자 429 `/sorry` 에
+우리 IP 를 적어 보여줬다. brave 는 10분에 15질의로 몇 시간 잠겼다. 그래서 **질의 수를
+줄이는 것이 유일한 공짜 레버**다. 지문을 위장해 처리량을 늘리는 방향은 쓰지 않는다.
+
+**두 파일이 짝이다. 하나만 넣으면 nginx 가 뜨지 않는다.**
+
+| | 넣는 곳 |
+|---|---|
+| `edge/npm/http.conf` (존 정의) | 컨테이너 `/data/nginx/custom/http.conf` |
+| `edge/npm/vhost-searxng-advanced.conf` 의 `location /search` | NPM 의 해당 vhost Advanced |
+
+존 정의 없이 vhost 만 넣으면 설정 검사에서 `"sxng" zone not found` 로 **거부되고 앞단
+전체가 안 뜬다.** 캐시를 안 쓸 거면 vhost 의 `location /search` 블록도 같이 뺀다.
+
+```bash
+# 설치 (호스트 경로는 edge/nginx/docker-compose.yml 의 data 볼륨)
+cp edge/npm/http.conf <NPM data>/nginx/custom/http.conf
+docker exec nginx-proxy-manager nginx -t && docker exec nginx-proxy-manager nginx -s reload
+
+# 동작 확인 — 두 번째 호출이 HIT 여야 한다
+curl -sI -H "X-API-Key: <키>" "https://searxng.<도메인>/search?q=test&format=json" | grep -i x-cache
+curl -sI -H "X-API-Key: <키>" "https://searxng.<도메인>/search?q=test&format=json" | grep -i x-cache
+
+# 캐시 비우기
+docker exec nginx-proxy-manager sh -c 'rm -rf /data/cache/searxng/*'
+docker exec nginx-proxy-manager nginx -s reload
+```
+
+GET/HEAD 만 캐시된다 — 웹 UI 의 POST 검색은 대상이 아니다. `proxy_cache_lock` 은
+에이전트가 같은 질의를 병렬로 던질 때 상류 요청을 하나로 합친다(8병렬 → 상류 1회).
+
+---
+
 ## 클라이언트
 
 검색은 **클라이언트에서** 돈다. vLLM 이 대신 검색하지 않는다 —
@@ -135,6 +171,9 @@ cm2 (어느 기계든)
 vhost·인증서·Access List 는 전부 `/home/user/work/nginx/data/database.sqlite` 안에
 있고 키와 인증서가 들어 있어 커밋하지 않는다. 그 디렉터리를 잃으면 위 vhost 셋팅을
 다시 해야 한다.
+
+`nginx/custom/http.conf`(캐시 존)도 같은 디렉터리에 살지만 비밀값이 없어서 이 리포에
+`edge/npm/http.conf` 로 사본을 둔다 — 복구할 때 그대로 복사하면 된다.
 
 호스트 경로(`/home/user/...`)는 `edge/nginx/docker-compose.yml`,
 `edge/searxng/docker-compose.yml`, `searxng-serve.sh` 세 곳에 있다.
