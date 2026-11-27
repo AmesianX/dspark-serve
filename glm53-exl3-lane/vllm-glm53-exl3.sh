@@ -104,6 +104,17 @@ status() {
   curl -s -o /dev/null -w "health=%{http_code}\n" -m5 -H "Authorization: Bearer $KEY" $HEALTH
   echo "모델: $(model_label)"
   docker inspect $NAME --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | grep -E 'DENSE_FP8_KERNEL|LMHEAD_FP8|KV_CACHE_MEMORY' | tr '\n' ' '; echo
+  # 운영 기능이 실제로 켜졌는지 — 재구성한 새 머신이 "지금과 같은 서버"인지 이 줄로 본다.
+  local args env feat=()
+  args=$(docker inspect $NAME --format '{{join .Args " "}}' 2>/dev/null)
+  env=$(docker inspect $NAME --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null)
+  [[ "$args" == *OffloadingConnector* ]] && feat+=("NVMe오프로드=on($(du -sh "${KV_OFFLOAD_DIR:-$HOME/glm53-kv-offload}" 2>/dev/null | cut -f1))") || feat+=("NVMe오프로드=OFF")
+  [[ "$args" =~ --scheduling-policy[[:space:]]+priority ]] && feat+=("priority=on") || feat+=("priority=OFF")
+  [[ $(grep -c '^GLM53_BI_.*=1$' <<<"$env") -ge 7 ]] && feat+=("배치불변=on") || feat+=("배치불변=OFF")
+  [[ "$args" == *num_speculative_tokens_per_batch_size* ]] && feat+=("MTP동적=on") || feat+=("MTP동적=OFF")
+  local ab; ab=$(curl -s -o /dev/null -w '%{http_code}' -m5 -X POST -H "Authorization: Bearer $KEY" "${HEALTH%/health}/ab")
+  [[ "$ab" == 410 ]] && feat+=("/ab=요청별만") || feat+=("/ab=전역쓰기열림($ab)")
+  echo "기능: ${feat[*]}"
   free -g | awk 'NR==2{print "[HEAD]   가용 "$7"GB"}'; wssh "free -g | awk 'NR==2{print \"[WORKER] 가용 \"\$7\"GB\"}'"
   watch_status
 }

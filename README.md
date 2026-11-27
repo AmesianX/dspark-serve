@@ -137,7 +137,7 @@ uniform decode")가 이미지의 포크(08-10 분기)에 빠져 있었다. 이�
 | OS | DGX OS (Ubuntu 24.04.5), 커널 7.0.0-1019-nvidia | |
 | 드라이버 | NVIDIA 580.178.04 | |
 | Docker | 29.6.2 + nvidia-container-toolkit 1.20.1 | DGX OS 기본 구성 |
-| 디스크 | 노드당 여유 **약 200GB** | 모델 164GiB + 어댑터 작업 파일 |
+| 디스크 | 노드당 여유 **약 500GB**, ext4(우리는 NVMe 위 ext4) | 모델 164GiB + 어댑터 작업 파일 + **NVMe KV 오프로드 저장소 200GB + 여유 100GB**. 런처가 `KV_OFFLOAD_DIR`(기본 `~/glm53-kv-offload`)의 여유를 재서 모자라면 **기동을 거부**한다. 저장소는 O_DIRECT 를 쓰므로 tmpfs·overlay 위는 안 된다. 디스크가 작으면 `glm53-serve.env` 의 `KV_OFFLOAD_BYTES` 를 줄인다 |
 | 기타 | 헤드→워커 **비밀번호 없는 ssh**, `sudo` 비밀번호 없음(권장) | sudo는 기동 전 페이지 캐시 비우기에 쓴다(없어도 동작) |
 
 swap은 필요 없다(로더가 direct I/O로 읽는다).
@@ -290,10 +290,13 @@ READY까지 약 3~4분. 마지막에 `✅ API READY ... 원본 + /ab off` 가 �
 ### 5.7 동작 확인
 
 ```bash
-./vllm-glm53-exl3.sh STATUS                       # 양 노드 컨테이너, health=200, 모델/스위치 상태, 가용 메모리
+./vllm-glm53-exl3.sh STATUS                       # 양 노드 컨테이너, health=200, 모델/스위치 상태, 기능, 가용 메모리
+#   "기능:" 줄이 정확히 이래야 지금 우리 서버와 같다 (하나라도 OFF 면 glm53-serve.env 가 템플릿과 다르다):
+#   기능: NVMe오프로드=on(…) priority=on 배치불변=on MTP동적=on /ab=요청별만
 python3 tools/prefill_tail_nan_check.py           # '!' 붕괴 회귀 검사 → PASS
 python3 tools/kmeas.py                            # 디코드 속도(산문/코드/영문)
-curl -s -H "Authorization: Bearer <키>" http://localhost:8000/ab     # {"scale":0.0, ... "mode":"original"}
+curl -s -H "Authorization: Bearer <키>" http://localhost:8000/ab     # {"scale":0.0, ... "mode":"original", "global_write":false}
+ls -la ~/glm53-kv-offload/; ssh <워커> 'ls -la ~/glm53-kv-offload/'   # 랭크별 오프로드 파일이 양 노드에 생긴다
 ```
 
 간단한 대화:
