@@ -193,7 +193,7 @@ docker exec -i vllm_glm53 python3 - /cache/bi_alone /cache/bi_batch < bi_detail_
 
 **검증.**
 - 수정 후 덤프: 840행 전부 정답 top-512 와 일치, 두 실행 84/84 스텝·층 동일.
-- 운영 설정(CUDA 그래프 켬): 18K·38K·78K 콜드×3 비트 동일. 44.7K F1(적중)·F2(동시 처리) 비트 동일(KV_OFFLOAD_TESTPLAN.md §6).
+- 운영 설정(CUDA 그래프 켬): 18K·38K·78K 콜드×3 비트 동일. 44.7K F1(적중)·F2(동시 처리)·F5(재기동 후 NVMe 복원 7.45s) 비트 동일(KV_OFFLOAD_TESTPLAN.md §6).
 - 속도: kmeas 34.9 / 39.0 / 44.8 t/s(수정 전과 같음). 38K 문맥 디코드 34.0 t/s(혼자 돈 회차, 수정 전과의 A/B 는 아님).
 
 **교훈.** 결정성 시험은 출력 텍스트가 아니라 **logprob 까지**, 그리고 **18K 를 넘는 길이**로 할 것. 이 버그는 BI 작업 때 텍스트만

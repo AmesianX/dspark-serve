@@ -198,8 +198,8 @@ Cause not investigated (candidates: KDA chunk boundaries when there are several 
 
 **Verification.**
 - After the fix: all 840 dumped rows match the true top-512; the two runs are identical in 84/84 step-layers.
-- Production settings (CUDA graphs on): 18K, 38K, 78K cold ×3 bit-identical. 44.7K F1 (hit) and F2 (concurrent) bit-identical
-  (KV_OFFLOAD_TESTPLAN.en.md §6).
+- Production settings (CUDA graphs on): 18K, 38K, 78K cold ×3 bit-identical. 44.7K F1 (hit), F2 (concurrent) and F5 (NVMe restore
+  after restart, 7.45s) bit-identical (KV_OFFLOAD_TESTPLAN.en.md §6).
 - Speed: kmeas 34.9 / 39.0 / 44.8 t/s (unchanged). 38K-context decode 34.0 t/s (a run alone; not an A/B against the old code).
 
 **Lesson.** Test determinism on **logprobs**, not just output text, and **beyond 18K tokens**. This bug sat between the BI work's

@@ -119,7 +119,7 @@ indexer top-k bug (BATCH_INVARIANCE.en.md §6-c). The results below are the reru
 | F3 | `/ab` namespaces: leak / `on` / `auto` | no leak, `on` 14.9→2.5s, `auto` reuses the prefix 7.5s (fresh 19.7) |
 | F3' | after restart, NVMe: ab=1 / ab=0 / `on` chain | 6.3s (default + own chunks) / 13.0s (bit-identical, no leak) / 8.4s (bit-identical) |
 | F4 | sessions A·B·C (cm2→gateway→vLLM) | public prefix 9,216 shared (incl. NVMe), same session 17,920, others' private part 0 |
-| F5 | F1 request after RESTARTALL | (18K, before the fix) NVMe 6.12s (cold 15.37), bit-identical to before the restart. 44.7K rerun at the next restart |
+| F5 | F1 request after RESTARTALL (44.7K) | NVMe restore 7.45s (cold 33.37, GPU hit 1.08), bit-identical to before the restart |
 | F6 | kmeas | 34.6 / 39.2 / 44.8 t/s (unchanged) |
 
 ## 5. What to add when moving to a different configuration (recommended)
