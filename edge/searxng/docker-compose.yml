@@ -23,6 +23,9 @@ services:
       SEARXNG_BASE_URL: https://searxng.systemboan.net/
     volumes:
       - /home/user/searxng:/etc/searxng
+      # 3층 브라우저 승격 — 서버가 결과 빈약/차단을 보고 스스로 판단(2026-11-27).
+      # 레인 토큰은 리포 밖 /home/user/searxng/browser_lane_token(600, uid 977).
+      - /home/user/work/dspark-serve/edge/searxng/plugins/browser_escalate.py:/usr/local/searxng/searx/plugins/browser_escalate.py:ro
       - searxng-cache:/var/cache/searxng
     networks:
       - nginx-network

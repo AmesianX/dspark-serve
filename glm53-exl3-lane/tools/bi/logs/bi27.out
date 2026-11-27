@@ -1,0 +1,31 @@
+[SYNC]   헤드 == 워커(10.0.1.2) (671 files, exp/glm53-kv-offload@77f903b)
+   Maximum concurrency for 524,288 tokens per request: 2.42x
+3
+{"phase": "alone", "X": "# 전체 구조 요약 (5줄)\n\n1. **Scheduler (v1"}
+{"phase": "co", "X": "# 전체 구조 요약 (5줄)\n\n1. **Scheduler (v1/core/sched/scheduler.py)**: vLLM V1 엔진의 핵심 스케줄러로, `schedule()`에서 running/waiting 큐의 "}
+[WORKER] memwatch off
+(3, '1_attn_in') equal
+(3, '2_attn_out') maxdiff 7.81e-03
+(3, '2a_idx_gate') equal
+(3, '2a_idx_k') equal
+(3, '2a_idx_topk') maxdiff 4.06e+03
+(3, '2a_idx_w') equal
+(3, '3_mlp_in') maxdiff 7.81e-03
+(3, '3a_router') maxdiff 3.12e-02
+(3, '3b_topk_w') maxdiff 1.23e-03
+(3, '3c_topk_id') equal
+(3, '3d_routed') maxdiff 3.91e-03
+(3, '4_mlp_out') maxdiff 2.73e-02
+---
+(3, '1_attn_in') equal
+(3, '2_attn_out') equal
+(3, '2a_idx_gate') equal
+(3, '2a_idx_k') equal
+(3, '2a_idx_topk') equal
+(3, '2a_idx_w') equal
+(3, '3_mlp_in') equal
+(3, '3a_router') equal
+(3, '3b_topk_w') equal
+(3, '3c_topk_id') equal
+(3, '3d_routed') equal
+(3, '4_mlp_out') equal

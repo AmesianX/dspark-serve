@@ -87,15 +87,13 @@ o_proj(x) + scale · (x·Aᵀ)·Bᵀ        scale = 0 → 원본,  scale = 1 →
 `scale`은 GPU 텐서라 CUDA 그래프를 다시 캡처하지 않고, 프리필도 다시 하지 않는다. 양 노드 TP 워커에 동시에 반영된다.
 
 ```bash
-curl -H "Authorization: Bearer $KEY" http://<헤드>:8000/ab                     # 상태
-# {"scale":0.0,"workers":[0.0,0.0],"consistent":true,"mode":"original"}
-curl -X POST -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
-     -d '{"scale":1}' http://<헤드>:8000/ab                                     # 검열 해제 ON
-curl -X POST ... -d '{"scale":0}' http://<헤드>:8000/ab                         # OFF (기본)
+curl -H "Authorization: Bearer $KEY" http://<헤드>:8000/ab                     # 상태(읽기 전용)
+# 켜기는 자기 요청에만: 요청 본문에 "vllm_xargs":{"ab_scale":1}
+# POST /ab 는 410 — 전역 스위치는 남의 모델까지 바꿨으므로 제거(2026-11-27)
 ```
 
 실측: 중립 타깃 16문항 거부 5건 → 0건, 속도 손실 스텝당 1~2ms, temperature 0 결정성 양쪽 모두 유지.
-codemason 클라이언트는 `/ab auto`로 "요청을 승낙하는 턴"에만 켜고 도구 호출이 시작되면 끈다. 상세는 [AB-SWITCH.md](glm53-exl3-lane/AB-SWITCH.md).
+codemason 클라이언트는 `/ab auto`로 사용자 턴의 첫 요청에만 `ab_scale=1`을 싣는다(서버 상태를 바꾸지 않음). 상세는 [AB-SWITCH.md](glm53-exl3-lane/AB-SWITCH.md).
 
 ## 4. 마지막 버그: '!' 붕괴 (2026-10-02 해결)
 

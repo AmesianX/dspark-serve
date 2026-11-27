@@ -1,0 +1,12 @@
+== off BI=/
+[off] 10 prompts: mean step 82.07ms (min 79.7 max 84.3) | mean t/s 36.55
+[off] per-prompt step ms: 82.7 80.9 82.0 84.3 79.7 81.9 80.3 84.2 81.3 83.3
+== on BI=1/1
+[on] 10 prompts: mean step 83.36ms (min 79.7 max 85.2) | mean t/s 36.39
+[on] per-prompt step ms: 83.9 84.3 83.3 85.2 79.7 82.8 84.2 85.0 81.8 83.5
+== off BI=/
+[off] 10 prompts: mean step 82.11ms (min 80.2 max 84.9) | mean t/s 36.51
+[off] per-prompt step ms: 82.7 81.1 82.2 84.0 80.2 81.9 81.2 84.9 80.6 82.2
+== on BI=1/1
+[on] 10 prompts: mean step 83.06ms (min 80.4 max 84.6) | mean t/s 36.52
+[on] per-prompt step ms: 83.4 83.7 83.2 84.3 80.4 82.9 83.7 84.6 81.2 83.0

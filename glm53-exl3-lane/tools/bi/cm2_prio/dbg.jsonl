@@ -1,0 +1,73 @@
+{"t": 1795737371.926, "method": "GET", "path": "/v1/models", "status": 200}
+{"t": 1795737371.929, "method": "POST", "path": "/v1/chat/completions", "priority": "ABSENT", "n_msgs": 1, "stream": null, "model": "glm-5.3-flash", "status": 400, "err": "{\"error\":{\"message\":\"At most 5 image(s) may be provided in one prompt. (parameter=image)\",\"type\":\"BadRequestError\",\"param\":\"image\",\"code\":400}}"}
+{"t": 1795737372.338, "method": "GET", "path": "/v1/models", "status": 200}
+{"t": 1795737372.346, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737373.058, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737373.77, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737374.48, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737375.19, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737375.9, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737376.611, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737377.321, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737378.03, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737378.739, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737379.45, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737388.604, "method": "POST", "path": "/v1/chat/completions", "priority": "ABSENT", "n_msgs": 2, "stream": true, "model": "glm-5.3-flash", "status": 200}
+{"t": 1795737508.946, "method": "GET", "path": "/v1/models", "status": 200}
+{"t": 1795737508.951, "method": "POST", "path": "/v1/chat/completions", "priority": "ABSENT", "n_msgs": 1, "stream": null, "model": "glm-5.3-flash", "status": 400, "err": "{\"error\":{\"message\":\"At most 5 image(s) may be provided in one prompt. (parameter=image)\",\"type\":\"BadRequestError\",\"param\":\"image\",\"code\":400}}"}
+{"t": 1795737509.339, "method": "GET", "path": "/v1/models", "status": 200}
+{"t": 1795737509.347, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737510.059, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737519.218, "method": "POST", "path": "/v1/chat/completions", "priority": "ABSENT", "n_msgs": 2, "stream": true, "model": "glm-5.3-flash", "status": 200}
+{"t": 1795737519.274, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737519.986, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737530.438, "method": "POST", "path": "/v1/chat/completions", "priority": 1, "n_msgs": 2, "stream": true, "model": "glm-5.3-flash", "status": 200}
+{"t": 1795737530.496, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737534.204, "method": "POST", "path": "/v1/chat/completions", "priority": 1, "n_msgs": 2, "stream": true, "model": "glm-5.3-flash", "status": 200}
+{"t": 1795737534.249, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737535.547, "method": "POST", "path": "/v1/chat/completions", "priority": 1, "n_msgs": 4, "stream": true, "model": "glm-5.3-flash", "status": 200}
+{"t": 1795737539.361, "method": "POST", "path": "/v1/chat/completions", "priority": 1, "n_msgs": 4, "stream": true, "model": "glm-5.3-flash", "status": 200}
+{"t": 1795737539.417, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737540.126, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737540.835, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737542.473, "method": "POST", "path": "/v1/chat/completions", "priority": "ABSENT", "n_msgs": 5, "stream": true, "model": "glm-5.3-flash", "status": 200}
+{"t": 1795737543.61, "method": "GET", "path": "/v1/models", "status": 200}
+{"t": 1795737543.613, "method": "POST", "path": "/v1/chat/completions", "priority": "ABSENT", "n_msgs": 1, "stream": null, "model": "glm-5.3-flash", "status": 400, "err": "{\"error\":{\"message\":\"At most 5 image(s) may be provided in one prompt. (parameter=image)\",\"type\":\"BadRequestError\",\"param\":\"image\",\"code\":400}}"}
+{"t": 1795737544.003, "method": "GET", "path": "/v1/models", "status": 200}
+{"t": 1795737544.011, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737544.722, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737545.432, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737546.141, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737546.849, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737547.558, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737548.268, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737562.134, "method": "POST", "path": "/v1/chat/completions", "priority": "ABSENT", "n_msgs": 2, "stream": true, "model": "glm-5.3-flash", "status": 200}
+{"t": 1795737562.178, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737562.888, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737565.259, "method": "POST", "path": "/v1/chat/completions", "priority": 1, "n_msgs": 2, "stream": true, "model": "glm-5.3-flash", "status": 200}
+{"t": 1795737565.315, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737566.026, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737568.974, "method": "POST", "path": "/v1/chat/completions", "priority": 1, "n_msgs": 4, "stream": true, "model": "glm-5.3-flash", "status": 200}
+{"t": 1795737569.03, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737569.076, "method": "POST", "path": "/v1/chat/completions", "priority": 1, "n_msgs": 2, "stream": true, "model": "glm-5.3-flash", "status": 200}
+{"t": 1795737569.74, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737572.839, "method": "POST", "path": "/v1/chat/completions", "priority": 1, "n_msgs": 6, "stream": true, "model": "glm-5.3-flash", "status": 200}
+{"t": 1795737572.882, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737573.591, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737578.421, "method": "POST", "path": "/v1/chat/completions", "priority": 1, "n_msgs": 4, "stream": true, "model": "glm-5.3-flash", "status": 200}
+{"t": 1795737583.26, "method": "POST", "path": "/v1/chat/completions", "priority": 1, "n_msgs": 8, "stream": true, "model": "glm-5.3-flash", "status": 200}
+{"t": 1795737583.3, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737584.008, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737584.717, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737586.374, "method": "POST", "path": "/v1/chat/completions", "priority": "ABSENT", "n_msgs": 5, "stream": true, "model": "glm-5.3-flash", "status": 200}
+{"t": 1795737587.491, "method": "GET", "path": "/v1/models", "status": 200}
+{"t": 1795737587.495, "method": "POST", "path": "/v1/chat/completions", "priority": "ABSENT", "n_msgs": 1, "stream": null, "model": "glm-5.3-flash", "status": 400, "err": "{\"error\":{\"message\":\"At most 5 image(s) may be provided in one prompt. (parameter=image)\",\"type\":\"BadRequestError\",\"param\":\"image\",\"code\":400}}"}
+{"t": 1795737587.885, "method": "GET", "path": "/v1/models", "status": 200}
+{"t": 1795737587.891, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737588.599, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737589.306, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737590.014, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737590.722, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737591.429, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737592.139, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737597.595, "method": "POST", "path": "/v1/chat/completions", "priority": "ABSENT", "n_msgs": 2, "stream": true, "model": "glm-5.3-flash", "status": 200}

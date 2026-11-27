@@ -1,0 +1,13 @@
+{"B_chunks": 32, "B_payload_flipped_slot": 1315, "C_chunks": 32, "C_header_zeroed_slot": 1370, "B_rank_of_slot": 16, "C_rank_of_slot": 16}
+   Maximum concurrency for 524,288 tokens per request: 2.42x
+] glm53-nvme: restored 1453 offloaded chunks from disk
+{"tag": "A_concurrent_after_restart", "prompt_tokens": 148962, "cached": null, "ttft_s": 29.2, "completion_tokens": 100, "decode_tps": 10.2, "same_as_cold": false}
+{"tag": "B_concurrent_after_restart", "prompt_tokens": 148955, "cached": null, "ttft_s": 199.41, "completion_tokens": 100, "decode_tps": 36.2, "same_as_cold": true}
+{"tag": "C_concurrent_after_restart", "prompt_tokens": 148962, "cached": null, "ttft_s": 168.69, "completion_tokens": 100, "decode_tps": 36.4, "same_as_cold": false}
+{"tag": "D_concurrent_after_restart", "prompt_tokens": 148957, "cached": null, "ttft_s": 186.85, "completion_tokens": 100, "decode_tps": 9.5, "same_as_cold": true}
+{"tag": "mem_floor_after", "mem_floor_gb": {"head": 6.22, "worker": 8.83}}
+(Worker_TP0 pid=245) ERROR 11-26 13:43:50 [glm53_nvme.py:532] glm53-nvme load job 0 failed: slot 1315: payload crc mismatch
+(EngineCore pid=178) WARNING 11-26 13:43:50 [scheduler.py:3237] KV load failure: request chatcmpl-91aaf48c71df3df7-84d85f41 recomputes from token 0 (142848 tokens)
+(EngineCore pid=178) WARNING 11-26 13:43:50 [scheduler.py:3364] Recovered from KV load failure: 1 request(s) rescheduled (142848 tokens affected).
+(EngineCore pid=178) WARNING 11-26 13:43:50 [glm53_nvme.py:348] glm53-nvme: invalidated 34 chunks
+(EngineCore pid=178) WARNING 11-26 13:43:50 [scheduler.py:2101] KV offloading: load job 0 failed on some rank; request chatcmpl-91aaf48c71df3df7-84d85f41 recomputes, 34 chunks invalidated

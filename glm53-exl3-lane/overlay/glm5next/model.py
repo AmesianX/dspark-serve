@@ -187,6 +187,10 @@ class Glm5NextMoE(nn.Module):
             out_dtype=self.router_dtype,
             prefix=f"{prefix}.gate",
         )
+        if _BI_ROUTER_ON:
+            _bi_wrap_gate(self.gate)
+        if _BI_PROBE_DIR is not None:
+            _bi_probe_wrap_moe(self, prefix)
         if config.topk_method == "noaux_tc":
             self.gate.e_score_correction_bias = nn.Parameter(
                 torch.empty(config.n_routed_experts, dtype=torch.float32)
@@ -285,6 +289,166 @@ class Glm5NextMoE(nn.Module):
             final_hidden_states = final_hidden_states[:num_tokens]
 
         return final_hidden_states.view(num_tokens, hidden_dim)
+
+
+# [ours] GLM53_BI_PROBE=<dir>: batch-invariance probe (eager only, rank 0).
+# Dumps, for rows whose position >= GLM53_BI_PROBE_MINPOS, the activation at four
+# points of every decoder layer plus the row's position and input token, one
+# file per forward. Off (unset) = these branches are never taken.
+_BI_PROBE_DIR = os.environ.get("GLM53_BI_PROBE") or None
+_BI_PROBE_MINPOS = int(os.environ.get("GLM53_BI_PROBE_MINPOS", "0") or 0)
+_BI_STATE: dict = {"step": 0, "sel": None, "buf": None}
+# role (decode-row count) is published when any role-based switch is on
+_BI_MOE_ON = any(os.environ.get(v, "0") == "1" for v in ("GLM53_BI_MOE", "GLM53_BI_ROUTER", "GLM53_BI_INDEXER", "GLM53_BI_DENSE"))
+_BI_ROUTER_ON = os.environ.get("GLM53_BI_ROUTER", "0") == "1"
+
+
+def _bi_layer_idx(name: str):
+    import re
+
+    m = re.search(r"layers\.(\d+)\.", name or "")
+    return int(m.group(1)) if m else None
+
+
+def _bi_probe_wrap_moe(moe, prefix: str) -> None:
+    """[ours] probe inside the MoE block: router logits, shared-expert output.
+    Routed output and top-k come from the patched Exl3MoEMethod.apply."""
+    li = _bi_layer_idx(prefix + ".")
+    if li is None:
+        return
+    g_orig = moe.gate.forward
+
+    def g_fwd(x):
+        out = g_orig(x)
+        _bi_probe(li, "3a_router", out[0])
+        return out
+
+    moe.gate.forward = g_fwd
+    se = getattr(moe, "shared_experts", None)
+    if se is not None:
+        s_orig = se.forward
+
+        def s_fwd(*a, **k):
+            out = s_orig(*a, **k)
+            _bi_probe(li, "3e_shared", out[0] if isinstance(out, tuple) else out)
+            return out
+
+        se.forward = s_fwd
+    global _BI_MOE_PATCHED
+    if not _BI_MOE_PATCHED:
+        _BI_MOE_PATCHED = True
+        from vllm.model_executor.layers.quantization.exl3 import Exl3MoEMethod
+
+        a_orig = Exl3MoEMethod.apply
+
+        def a_fwd(self, layer, x, topk_weights, topk_ids, *a, **k):
+            out = a_orig(self, layer, x, topk_weights, topk_ids, *a, **k)
+            idx = _bi_layer_idx(getattr(layer, "layer_name", ""))
+            if idx is not None:
+                _bi_probe(idx, "3b_topk_w", topk_weights.float())
+                _bi_probe(idx, "3c_topk_id", topk_ids.float())
+                _bi_probe(idx, "3d_routed", out)
+            return out
+
+        Exl3MoEMethod.apply = a_fwd
+
+
+_BI_MOE_PATCHED = False
+
+
+def _bi_patch_grouped_topk() -> None:
+    """[ours] GLM53_BI_TOPK: ops.grouped_topk switches implementation at M>1024
+    (rows of M<=1024 calls are bit-identical to M=1). Call it in <=1024-row
+    chunks. Outputs are cloned per chunk (the op may reuse its buffers)."""
+    from vllm import _custom_ops as _ops
+
+    orig = _ops.grouped_topk
+
+    def grouped_topk(scores, *args, **kwargs):
+        m = scores.shape[0]
+        if m <= 1024 or torch.cuda.is_current_stream_capturing():
+            return orig(scores, *args, **kwargs)
+        ws, ids = [], []
+        for s0 in range(0, m, 1024):
+            w, i = orig(scores[s0 : s0 + 1024], *args, **kwargs)
+            ws.append(w.clone())
+            ids.append(i.clone())
+        return torch.cat(ws), torch.cat(ids)
+
+    _ops.grouped_topk = grouped_topk
+
+
+if os.environ.get("GLM53_BI_TOPK", "0") == "1":
+    _bi_patch_grouped_topk()
+
+
+def _bi_wrap_gate(gate) -> None:
+    """[ours] GLM53_BI_ROUTER: on GB10 (sm_121) GateLinear has no specialized
+    kernel and runs cuBLAS F.linear for every M; cuBLAS changes algorithm with M
+    (M=2..16 rows are bit-identical to each other, M=1 and M>16 are not).
+    Decode rows: cuBLAS in 2..16-row calls (a decode-only step of <=16 rows is the
+    unchanged call). Prefill rows: batch-invariant persistent matmul."""
+    orig = gate.forward
+    from vllm.model_executor.layers.quantization import exl3 as _exl3
+
+    def forward(x):
+        role = _exl3._BI_ROLE
+        if x.dim() != 2 or role["m"] != x.shape[0] or role["d"] < 0:
+            return orig(x)
+        d, m = role["d"], role["m"]
+        w = gate.weight
+        if x.dtype != w.dtype:
+            x = x.to(w.dtype)
+        # decode rows -> fixed-config Triton (cuBLAS rows were not position-
+        # invariant in-process, bi29); prefill rows -> persistent matmul.
+        out = _exl3.bi_gemm_role(x, w)
+        if gate.out_dtype is not None and out.dtype != gate.out_dtype:
+            out = out.to(gate.out_dtype)
+        return out, None
+
+    gate.forward = forward
+
+
+def _bi_probe_begin(hidden_states, positions) -> None:
+    # The vision lane feeds inputs_embeds (input_ids is None), so a row is
+    # identified by its position plus its input embedding (same token -> same
+    # embedding row).
+    if _BI_PROBE_DIR is None or torch.distributed.get_rank() != 0:
+        return
+    sel = (positions >= _BI_PROBE_MINPOS).nonzero(as_tuple=True)[0]
+    if sel.numel() == 0:
+        _BI_STATE["sel"] = None
+        return
+    _BI_STATE["sel"] = sel
+    _BI_STATE["buf"] = {"pos": positions[sel].cpu(), "emb": hidden_states[sel].detach().cpu(), "act": {},
+                        "m_total": int(hidden_states.shape[0])}
+
+
+_BI_PROBE_MAXLAYER = int(os.environ.get("GLM53_BI_PROBE_MAXLAYER", "999") or 999)
+_BI_PROBE_MINLAYER = int(os.environ.get("GLM53_BI_PROBE_MINLAYER", "-1") or -1)
+_BI_PROBE_TAGS = tuple(t for t in os.environ.get("GLM53_BI_PROBE_TAGS", "").split(",") if t)
+
+
+def _bi_probe(layer_idx: int, tag: str, x) -> None:
+    sel = _BI_STATE["sel"]
+    if sel is None or layer_idx > _BI_PROBE_MAXLAYER:
+        return
+    if layer_idx != -1 and layer_idx < _BI_PROBE_MINLAYER:
+        return
+    if _BI_PROBE_TAGS and tag not in _BI_PROBE_TAGS:
+        return
+    if x.shape[0] != _BI_STATE["buf"]["m_total"]:
+        return
+    _BI_STATE["buf"]["act"][(layer_idx, tag)] = x[sel].detach().to("cpu")
+
+
+def _bi_probe_end() -> None:
+    if _BI_STATE["sel"] is None:
+        return
+    _BI_STATE["step"] += 1
+    os.makedirs(_BI_PROBE_DIR, exist_ok=True)
+    torch.save(_BI_STATE["buf"], os.path.join(_BI_PROBE_DIR, f"f{_BI_STATE['step']:06d}.pt"))
+    _BI_STATE["sel"] = None
 
 
 class Glm5NextDecoderLayer(nn.Module):
@@ -499,10 +663,14 @@ class Glm5NextDecoderLayer(nn.Module):
         if self.is_sequence_parallel:
             x = sp_all_gather(x)[: positions.shape[0]]
 
+        if _BI_PROBE_DIR is not None:
+            _bi_probe(self.layer_idx, "1_attn_in", x)
         x = self.self_attn(
             hidden_states=x,
             positions=positions,
         )
+        if _BI_PROBE_DIR is not None:
+            _bi_probe(self.layer_idx, "2_attn_out", x)
 
         if self.is_sequence_parallel:
             x = sp_reduce_scatter(x)
@@ -521,10 +689,14 @@ class Glm5NextDecoderLayer(nn.Module):
         )
 
         # Fully Connected
+        if _BI_PROBE_DIR is not None:
+            _bi_probe(self.layer_idx, "3_mlp_in", x)
         if self._mlp_is_moe:
             x = self.mlp(x, already_sequence_parallel=self.is_sequence_parallel)
         else:
             x = self.mlp(x)
+        if _BI_PROBE_DIR is not None:
+            _bi_probe(self.layer_idx, "4_mlp_out", x)
 
         # mHC end. The last mHC layer materializes its final hc_post (nothing
         # to fuse with) then contracts; every other layer defers its hc_post to
@@ -750,6 +922,24 @@ class Glm5NextModel(nn.Module, EagleModelMixin):
         capture_layers = self.aux_hidden_state_layers
         if 0 in capture_layers:
             aux_hidden_states.append(hidden_states)
+        if _BI_PROBE_DIR is not None:
+            _bi_probe_begin(hidden_states, positions)
+        if _BI_MOE_ON:
+            # [ours] GLM53_BI_MOE: hand the MoE the decode-row count of this step.
+            from vllm.forward_context import get_forward_context
+            from vllm.model_executor.layers.quantization import exl3 as _exl3
+
+            # Host-side role from the model runner (no device sync). A decode-only
+            # step may be padded for CUDA graphs: every row then counts as decode.
+            _m_rows = int(hidden_states.shape[0])
+            # CUDA-graph capture never goes through prepare_inputs, and only
+            # decode-only steps are captured -> every row is a decode row.
+            _r = _exl3._BI_RUNNER
+            if torch.cuda.is_current_stream_capturing() or _r["all_decode"]:
+                _d = _m_rows
+            else:
+                _d = _r["d"]
+            _exl3.bi_set_role(_d, _m_rows)
         for layer in self._active_layers:
             hidden_states, residual, post, comb = layer(
                 positions, hidden_states, residual, post, comb
@@ -781,6 +971,9 @@ class Glm5NextModel(nn.Module, EagleModelMixin):
             ]
 
         hidden_states = self.norm(hidden_states)
+        if _BI_PROBE_DIR is not None:
+            _bi_probe(-1, "5_final_norm", hidden_states)
+            _bi_probe_end()
         if aux_hidden_states:
             return hidden_states, aux_hidden_states
         return hidden_states

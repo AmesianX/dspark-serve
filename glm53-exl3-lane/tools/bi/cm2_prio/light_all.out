@@ -1,0 +1,65 @@
+##### S1/S2
+S1 cold ttft 15.09s (19295 tok) -> repeat ttft 1.26s | same text True | decode 37.1 t/s
+S2 same prompt with 1 decoding + 1 cold prefill concurrently: same text True
+##### S3 server priority ordering
+fill0 {'prio': 1, 'sent': 0.0, 'first_token': 0.7, 'wait': 0.7, 'done': 14.3}
+fill1 {'prio': 1, 'sent': 0.0, 'first_token': 1.7, 'wait': 1.7, 'done': 30.7}
+fill2 {'prio': 1, 'sent': 0.0, 'first_token': 1.7, 'wait': 1.7, 'done': 40.6}
+fill3 {'prio': 1, 'sent': 0.0, 'first_token': 1.7, 'wait': 1.7, 'done': 48.1}
+B_main_late {'prio': None, 'sent': 3.0, 'first_token': 15.0, 'wait': 12.0, 'done': 17.4}
+A_sub_early {'prio': 1, 'sent': 2.0, 'first_token': 18.1, 'wait': 16.1, 'done': 20.6}
+##### S4 cm2 wire
+Traceback (most recent call last):
+  File "/tmp/claude-1000/-home-user/c68ea8bc-0b33-4cfc-8570-1d18eb6fc008/scratchpad/cmtest/prio_proxy.py", line 49, in <module>
+    http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/socketserver.py", line 457, in __init__
+    self.server_bind()
+  File "/usr/lib/python3.12/http/server.py", line 136, in server_bind
+    socketserver.TCPServer.server_bind(self)
+  File "/usr/lib/python3.12/socketserver.py", line 473, in server_bind
+    self.socket.bind(self.server_address)
+OSError: [Errno 98] Address already in use
+/tmp/claude-1000/-home-user/c68ea8bc-0b33-4cfc-8570-1d18eb6fc008/scratchpad/cmtest/run_tests.sh: 행 16번: kill: (3876376) - 그런 프로세스가 없음
+== T1_pass (mode=pass backend=vllm) exit=0
+   answer: 두 서브에이전트를 동시에 실행한다. src에는 파일이 총 5개(f1~f5.txt) 있고, src/f3.txt의 내용은 `line 3`이다. 
+   chat requests: 0 | (priority,status) counts: {}
+   sequence: 
+Traceback (most recent call last):
+  File "/tmp/claude-1000/-home-user/c68ea8bc-0b33-4cfc-8570-1d18eb6fc008/scratchpad/cmtest/prio_proxy.py", line 49, in <module>
+    http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/socketserver.py", line 457, in __init__
+    self.server_bind()
+  File "/usr/lib/python3.12/http/server.py", line 136, in server_bind
+    socketserver.TCPServer.server_bind(self)
+  File "/usr/lib/python3.12/socketserver.py", line 473, in server_bind
+    self.socket.bind(self.server_address)
+OSError: [Errno 98] Address already in use
+/tmp/claude-1000/-home-user/c68ea8bc-0b33-4cfc-8570-1d18eb6fc008/scratchpad/cmtest/run_tests.sh: 행 16번: kill: (3876780) - 그런 프로세스가 없음
+== T2_reject (mode=reject backend=vllm) exit=0
+   answer: 두 서브에이전트를 동시에 실행합니다. src에는 5개의 파일(f1.txt~f5.txt)이 있고, 그중 src/f3.txt의 내용은 "line 3" (1줄)입니다. 
+   chat requests: 0 | (priority,status) counts: {}
+   sequence: 
+Traceback (most recent call last):
+  File "/tmp/claude-1000/-home-user/c68ea8bc-0b33-4cfc-8570-1d18eb6fc008/scratchpad/cmtest/prio_proxy.py", line 49, in <module>
+    http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/socketserver.py", line 457, in __init__
+    self.server_bind()
+  File "/usr/lib/python3.12/http/server.py", line 136, in server_bind
+    socketserver.TCPServer.server_bind(self)
+  File "/usr/lib/python3.12/socketserver.py", line 473, in server_bind
+    self.socket.bind(self.server_address)
+OSError: [Errno 98] Address already in use
+/tmp/claude-1000/-home-user/c68ea8bc-0b33-4cfc-8570-1d18eb6fc008/scratchpad/cmtest/run_tests.sh: 행 16번: kill: (3877285) - 그런 프로세스가 없음
+== T4_nosub (mode=pass backend=vllm) exit=0
+   answer: 15 
+   chat requests: 0 | (priority,status) counts: {}
+   sequence: 
+##### S5 restart -> NVMe
+   Maximum concurrency for 524,288 tokens per request: 2.42x
+S5 after RESTARTALL: ttft 5.36s (cold was 15.09s) | same text as before restart True
+health=200
+[HEAD]   가용 7GB
+[WORKER] 가용 10GB

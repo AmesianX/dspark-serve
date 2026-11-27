@@ -1,0 +1,22 @@
+{"tag": "P_cold", "prompt_tokens": 82374, "cached": null, "ttft_s": 59.72, "completion_tokens": 120, "decode_tps": 34.2, "slots": ["115 by group: {0: 70, 2: 15, 3: 15, 4: 15}", "115 by group: {0: 70, 2: 15, 3: 15, 4: 15}"]}
+{"tag": "P_gpu_hit", "prompt_tokens": 82374, "cached": null, "ttft_s": 1.25, "completion_tokens": 120, "decode_tps": 34.5, "same_as_cold": true}
+{"tag": "flood0", "prompt_tokens": 82376, "cached": null, "ttft_s": 59.62, "completion_tokens": 16, "decode_tps": 62.0, "elapsed_s": 60}
+{"tag": "flood1", "prompt_tokens": 82373, "cached": null, "ttft_s": 59.65, "completion_tokens": 16, "decode_tps": 61.9, "elapsed_s": 120}
+{"tag": "flood2", "prompt_tokens": 82379, "cached": null, "ttft_s": 60.0, "completion_tokens": 16, "decode_tps": 63.6, "elapsed_s": 180}
+{"tag": "flood3", "prompt_tokens": 82375, "cached": null, "ttft_s": 59.97, "completion_tokens": 16, "decode_tps": 63.5, "elapsed_s": 240}
+{"tag": "flood4", "prompt_tokens": 82377, "cached": null, "ttft_s": 59.56, "completion_tokens": 16, "decode_tps": 90.3, "elapsed_s": 300}
+{"tag": "flood5", "prompt_tokens": 82377, "cached": null, "ttft_s": 59.78, "completion_tokens": 16, "decode_tps": 91.7, "elapsed_s": 360}
+{"tag": "flood6", "prompt_tokens": 82371, "cached": null, "ttft_s": 59.94, "completion_tokens": 16, "decode_tps": 63.0, "elapsed_s": 420}
+{"tag": "flood7", "prompt_tokens": 82377, "cached": null, "ttft_s": 59.58, "completion_tokens": 16, "decode_tps": 91.2, "elapsed_s": 480}
+{"tag": "flood8", "prompt_tokens": 82376, "cached": null, "ttft_s": 59.5, "completion_tokens": 16, "decode_tps": 62.1, "elapsed_s": 540}
+{"tag": "flood9", "prompt_tokens": 82373, "cached": null, "ttft_s": 59.5, "completion_tokens": 16, "decode_tps": 92.4, "elapsed_s": 599}
+{"tag": "flood10", "prompt_tokens": 82377, "cached": null, "ttft_s": 59.55, "completion_tokens": 16, "decode_tps": 46.1, "elapsed_s": 659}
+{"tag": "flood11", "prompt_tokens": 82375, "cached": null, "ttft_s": 59.57, "completion_tokens": 16, "decode_tps": 62.4, "elapsed_s": 719}
+{"tag": "flood12", "prompt_tokens": 82377, "cached": null, "ttft_s": 59.56, "completion_tokens": 16, "decode_tps": 63.4, "elapsed_s": 779}
+{"tag": "flood13", "prompt_tokens": 82375, "cached": null, "ttft_s": 59.57, "completion_tokens": 16, "decode_tps": 61.9, "elapsed_s": 839}
+{"tag": "flood14", "prompt_tokens": 82371, "cached": null, "ttft_s": 59.51, "completion_tokens": 16, "decode_tps": 92.1, "elapsed_s": 898}
+{"tag": "flood15", "prompt_tokens": 82378, "cached": null, "ttft_s": 59.49, "completion_tokens": 16, "decode_tps": 62.1, "elapsed_s": 958}
+{"tag": "flood16", "prompt_tokens": 82377, "cached": null, "ttft_s": 59.5, "completion_tokens": 16, "decode_tps": 90.2, "elapsed_s": 1018}
+{"tag": "flood17", "prompt_tokens": 82376, "cached": null, "ttft_s": 59.55, "completion_tokens": 16, "decode_tps": 92.4, "elapsed_s": 1077}
+{"tag": "P_after_flood", "prompt_tokens": 82374, "cached": null, "ttft_s": 7.0, "completion_tokens": 120, "decode_tps": 34.9, "same_as_cold": true, "slots": ["637 by group: {0: 376, 2: 87, 3: 87, 4: 87}", "637 by group: {0: 376, 2: 87, 3: 87, 4: 87}"], "mem_floor_gb": {"head": 6.65, "worker": 9.34}}
+{"tag": "flood0_again", "prompt_tokens": 82376, "cached": null, "ttft_s": 6.99, "completion_tokens": 16, "decode_tps": 62.5}

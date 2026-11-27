@@ -248,6 +248,12 @@ class Glm5NextTailCache(DeepseekV32IndexerCache):
         return KpoolTailBackend
 
 
+# [ours] GLM53_BI_INDEXER: indexer bf16 cuBLAS GEMMs (wk_weights_proj, kpool gate)
+# write the indexer K cache; run them at fixed shapes so stored keys do not
+# depend on the batch. (The fp32 head-weight GEMM is already M-invariant.)
+_BI_INDEXER = _os.environ.get("GLM53_BI_INDEXER", "0") == "1"
+_BI_PROBE_ON = bool(_os.environ.get("GLM53_BI_PROBE"))
+
 class Indexer(nn.Module):
     def __init__(
         self,
@@ -317,6 +323,7 @@ class Indexer(nn.Module):
         self.quant_block_size = 128  # TODO: get from config
         self.topk_indices_buffer = topk_indices_buffer
         self._wp_fp32: torch.Tensor | None = None
+        self._bi_prefix = prefix
 
         # NOTE: (zyongye) we use fp8 naive cache,
         #       where we store value in fp8 and scale in fp32
@@ -398,8 +405,39 @@ class Indexer(nn.Module):
 
         # Compute the head gate in fp32; bf16 error can change near-tie pool
         # rankings on long-context tasks. Cache it after weights are loaded.
-        kw, _ = self.wk_weights_proj(hidden_states)
-        k = kw[:, : self.head_dim]
+        k = None
+        if _BI_INDEXER:
+            # [ours] GEMM + compiled LayerNorm both at fixed call shapes (16/1024
+            # rows): bi_e13 showed a single-row k flip with only the GEMM fixed.
+            from vllm.model_executor.layers.quantization import exl3 as _exl3
+
+            _kraw = _exl3.bi_gemm_role(
+                hidden_states, self.wk_weights_proj.weight[: self.head_dim]
+            )
+            if _kraw is not None:
+                # LayerNorm is M-invariant (tools/bi/ln_bi.py); the bi29 flip was the GEMM.
+                k = _fused_indexer_k_norm(
+                    _kraw, self.k_norm.weight, self.k_norm.bias, self.head_dim, self.k_norm.eps
+                )
+        _k_normed = k is not None
+        if _BI_PROBE_ON:
+            from vllm.models.glm5next.nvidia import model as _m
+
+            _li0 = _m._bi_layer_idx(self._bi_prefix + ".")
+            if _li0 is not None:
+                _m._bi_probe(_li0, "2b_idx_hs", hidden_states)
+                from vllm.model_executor.layers.quantization import exl3 as _exl3b
+
+                _kw_fix = _exl3b.bi_fixed_rows(
+                    hidden_states, lambda c: self.wk_weights_proj(c)[0][:, : self.head_dim].contiguous()
+                )
+                if _kw_fix is not None:
+                    _m._bi_probe(_li0, "2c_idx_kw_fixed", _kw_fix)
+                if k is not None:
+                    _m._bi_probe(_li0, "2d_idx_k_ln", k)
+        if k is None:
+            kw, _ = self.wk_weights_proj(hidden_states)
+            k = kw[:, : self.head_dim]
         if self._wp_fp32 is None:
             self._wp_fp32 = (
                 self.wk_weights_proj.weight.data[self.head_dim :, :]
@@ -410,15 +448,26 @@ class Indexer(nn.Module):
             # [ours] 2026-09-03: cuBLAS 가 [M,4096]x[4096,64] fp32 NN 에서 M=5 일 때 1블록 gemmSN
             # 커널(90~130us)을 고른다. [64,4096]@[4096,M] 로 뒤집으면 19us(정확도 동일, fp32 그대로).
             self._wp_fp32_nk = self._wp_fp32.t().contiguous()
-        if _SKINNY_FP32_FIX:
+        weights = None
+        if _BI_INDEXER:
+            # [ours] fp32 head-weight GEMM is not M/position-invariant either
+            # (bi24: rows ~2000 deep in a 2975-row call differ by 1e-9, enough to
+            # flip near-tie pool ranks). Same fixed-shape treatment.
+            from vllm.model_executor.layers.quantization import exl3 as _exl3
+
+            weights = _exl3.bi_head_weights(hidden_states, self._wp_fp32_nk)
+        if weights is not None:
+            pass
+        elif _SKINNY_FP32_FIX:
             # M=1 이면 .contiguous() 가 no-op(stride(0)=1) → DeepGEMM 이 거부. clone 으로 stride 강제.
             weights = (self._wp_fp32_nk @ hidden_states.float().t()).t().clone(memory_format=torch.contiguous_format)
         else:
             weights = torch.mm(hidden_states.float(), self._wp_fp32)
 
-        k = _fused_indexer_k_norm(
-            k, self.k_norm.weight, self.k_norm.bias, self.head_dim, self.k_norm.eps
-        )
+        if not _k_normed:
+            k = _fused_indexer_k_norm(
+                k, self.k_norm.weight, self.k_norm.bias, self.head_dim, self.k_norm.eps
+            )
 
         if self.rope_dim > 0:
             q_pe, q_nope = torch.split(
@@ -460,7 +509,13 @@ class Indexer(nn.Module):
         # kpool: per-token gate score driving the softmax-weighted pool. Computed
         # from the same hidden_states that produced `k`, so it stays token-aligned.
         # F.linear(x, gate) = x @ gate.T  with gate [head_dim, hidden_size].
-        gate_score = F.linear(hidden_states, self.index_kpool_compress_gate)
+        gate_score = None
+        if _BI_INDEXER:
+            from vllm.model_executor.layers.quantization import exl3 as _exl3
+
+            gate_score = _exl3.bi_gemm_role(hidden_states, self.index_kpool_compress_gate)
+        if gate_score is None:
+            gate_score = F.linear(hidden_states, self.index_kpool_compress_gate)
 
         # DeepGEMM's MQA-logits kernels (fp8_mqa_logits /
         # fp8_fp4_paged_mqa_logits) require num_heads in {32, 64}; this
@@ -472,7 +527,7 @@ class Indexer(nn.Module):
             q_fp8 = _pad_indexer_heads(q_fp8, pad)
             weights = _pad_indexer_heads(weights, pad)
 
-        return self.indexer_op(
+        _ret = self.indexer_op(
             hidden_states,
             q_fp8,
             k,
@@ -482,6 +537,17 @@ class Indexer(nn.Module):
             index_kpool=self.index_kpool,
             positions=positions,
         )
+        if _BI_PROBE_ON and self.topk_indices_buffer is not None:
+            from vllm.models.glm5next.nvidia import model as _m
+
+            _li = _m._bi_layer_idx(self._bi_prefix + ".")
+            if _li is not None:
+                n = hidden_states.shape[0]
+                _m._bi_probe(_li, "2a_idx_topk", self.topk_indices_buffer[:n].float())
+                _m._bi_probe(_li, "2a_idx_k", k)
+                _m._bi_probe(_li, "2a_idx_gate", gate_score)
+                _m._bi_probe(_li, "2a_idx_w", weights)
+        return _ret
 
 
 class Glm5NextMLAAttention(nn.Module):

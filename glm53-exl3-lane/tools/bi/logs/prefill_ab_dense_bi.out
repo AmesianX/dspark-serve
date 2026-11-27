@@ -1,0 +1,11 @@
+0
+[base] prompt 82390 ttft 59.68s -> prefill 1381 t/s
+[base] prompt 82387 ttft 59.84s -> prefill 1377 t/s
+[SYNC]   헤드 == 워커(10.0.1.2) (615 files, exp/glm53-kv-offload@df1793d)
+   Maximum concurrency for 524,288 tokens per request: 2.42x
+1
+[bi] prompt 82386 ttft 61.52s -> prefill 1339 t/s
+[bi] prompt 82387 ttft 60.51s -> prefill 1362 t/s
+[bi] prompt 82387 ttft 60.38s -> prefill 1364 t/s
+
+[exited with code 0]

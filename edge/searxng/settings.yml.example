@@ -93,84 +93,15 @@ engines:
   - name: bing
     disabled: true
 
-  # ── browser-lane (신원 있는 레인) ───────────────────────────────────────
-  # 왜: SearXNG 는 client.py:93 에서 쿠키를 하드코딩으로 버린다(= 익명). 그게
-  #     이 도구의 존재 이유지만, google/brave/qwant 는 신원 없는 방문자를 막는다.
-  #     그래서 익명성은 그대로 두고, 신원이 필요한 엔진만 별도 레인으로 뺐다.
-  #     레인은 영속 Chromium 프로필(= 감사 가능한 쿠키 묶음)을 들고 나간다.
-  #     설계·운영: ~/work/websearch-browser/DESIGN.md
-  #
-  # ⛔ 전부 disabled: true 로 둔다. 이건 "쓰지 말라"가 아니라 **기본 검색에서
-  #    빼라**는 뜻이다. SearXNG 는 모든 엔진을 기다리므로, 브라우저 엔진(5~8초)을
-  #    기본셋에 넣으면 **모든 검색이 그만큼 느려진다**. bang 으로 필요할 때만 쓴다:
-  #       !gbr io_uring documentation     (google)
-  #       !bbr ...  !qbr ...
-  #
-  # 레인이 꺼져 있으면 해당 엔진만 실패하고 SearXNG 가 알아서 suspend 한다.
-  - name: google browser
-    engine: json_engine
-    shortcut: gbr
-    categories: [general, web]
-    search_url: http://172.18.0.1:8099/search?q={query}&engine=google&n=10
-    results_query: results
-    url_query: url
-    title_query: title
-    content_query: content
-    # ⛔ 이 엔진 전용 네트워크. 두 가지를 바꿔야 붙는다:
-    #    - enable_http  : 레인은 172.18.0.1(docker bridge) 평문. 업스트림 기본은 HTTPS 전용.
-    #    - enable_http2 : SearXNG 는 평문에도 HTTP/2(prior-knowledge)로 붙는데 레인은
-    #      파이썬 http.server 라 H2 를 못 한다 → curl exit 16 → SearXNG 가
-    #      "unexpected crash" 로 보고. 실측: --http1.1 200 / --http2-prior-knowledge 000 exit=16.
-    network:
-      enable_http: true
-      enable_http2: false
-    headers:
-      X-Lane-Token: "__LANE_TOKEN__"
-    disabled: true
-    # ⚠️ google 은 결과 URL 을 /goto?url=<불투명토큰> 으로 감싼다. href·ping·DOM
-    #    어디에도 실제 URL 이 없다(2026-11-18 확인). 링크는 정상 동작하지만
-    #    최종 주소는 클릭(=fetch) 시점에 풀린다. 그래서 다른 엔진 결과와 URL
-    #    중복제거가 안 된다. 제목·요약·호스트는 정확하다.
-  - name: brave browser
-    engine: json_engine
-    shortcut: bbr
-    categories: [general, web]
-    search_url: http://172.18.0.1:8099/search?q={query}&engine=brave&n=10
-    results_query: results
-    url_query: url
-    title_query: title
-    content_query: content
-    # ⛔ 이 엔진 전용 네트워크. 두 가지를 바꿔야 붙는다:
-    #    - enable_http  : 레인은 172.18.0.1(docker bridge) 평문. 업스트림 기본은 HTTPS 전용.
-    #    - enable_http2 : SearXNG 는 평문에도 HTTP/2(prior-knowledge)로 붙는데 레인은
-    #      파이썬 http.server 라 H2 를 못 한다 → curl exit 16 → SearXNG 가
-    #      "unexpected crash" 로 보고. 실측: --http1.1 200 / --http2-prior-knowledge 000 exit=16.
-    network:
-      enable_http: true
-      enable_http2: false
-    headers:
-      X-Lane-Token: "__LANE_TOKEN__"
-    disabled: true
-  - name: qwant browser
-    engine: json_engine
-    shortcut: qbr
-    categories: [general, web]
-    search_url: http://172.18.0.1:8099/search?q={query}&engine=qwant&n=10
-    results_query: results
-    url_query: url
-    title_query: title
-    content_query: content
-    # ⛔ 이 엔진 전용 네트워크. 두 가지를 바꿔야 붙는다:
-    #    - enable_http  : 레인은 172.18.0.1(docker bridge) 평문. 업스트림 기본은 HTTPS 전용.
-    #    - enable_http2 : SearXNG 는 평문에도 HTTP/2(prior-knowledge)로 붙는데 레인은
-    #      파이썬 http.server 라 H2 를 못 한다 → curl exit 16 → SearXNG 가
-    #      "unexpected crash" 로 보고. 실측: --http1.1 200 / --http2-prior-knowledge 000 exit=16.
-    network:
-      enable_http: true
-      enable_http2: false
-    headers:
-      X-Lane-Token: "__LANE_TOKEN__"
-    disabled: true
+  # ── browser-lane: SearXNG 에서 제거 (2026-11-27) ──────────────────────────
+  #  예전엔 google/brave/qwant browser 엔진을 bang(!gbr !bbr !qbr) 전용으로 붙였다.
+  #  잘못된 설계였다: 3층(오너 신원 Chromium)으로 갈지를 **호출자가** 정했다 —
+  #  모델은 그 문법을 몰라 아무도 못 썼고, SearXNG 키를 가진 누구나 오너 신원으로
+  #  검색하게 하는 구멍이었다(disabled: true 여도 bang 은 통한다).
+  #  이제 클라이언트 → 3층 경로는 없다. 승격은 서버(websearch-index)가 2층 결과가
+  #  막히거나 빈약할 때 스스로 판단해 레인을 직접 부른다(제로 트러스트).
+  #  레인: ~/work/dspark-serve/websearch-browser/ (127.0.0.1·172.18.0.1, X-Lane-Token)
+
   # ── websearch-index (0층 로컬 색인 / 1층 기계용 공개창구) ─────────────────
   #  ~/work/websearch-index/ · 상세는 그 안의 README.md
   #
@@ -181,13 +112,9 @@ engines:
   #   - ⭐ 부수효과가 본체다: 평소 검색 질의가 전부 기록되고, 같은 주제를 두 번
   #     물으면 Google News RSS 구독으로 **승격**된다. 그때부터 그 주제는 영구히
   #     0층에서 나온다. 즉 **쓸수록 막히는 영역이 줄어든다.**
-  # ⛔ 아래 두 엔진은 이 리포에 없는 별도 서비스(:8097)를 가리킨다. 그 서비스가
-  #    없으면 질의마다 unresponsive 가 되고, SearXNG 는 에러를 내지 않아 조용히
-  #    품질만 떨어진다. 서비스를 띄운 박스에서만 disabled 를 내릴 것.
   - name: local index
     engine: json_engine
     shortcut: idx
-    disabled: true
     categories: [general, web]
     search_url: http://172.18.0.1:8097/search?q={query}&n=20&live=0
     results_query: results
@@ -222,3 +149,32 @@ engines:
       X-Index-Token: "__INDEX_TOKEN__"
     timeout: 15.0
     disabled: true
+
+# 3층 브라우저 승격: 서버 자동 판단 (2026-11-27). 플러그인 = dspark-serve/edge/searxng/plugins/browser_escalate.py
+# ⚠️ 이 블록은 기본 플러그인 목록을 "대체"한다(병합 아님 — 11-27 실측: 기본 플러그인이 전부 꺼졌다).
+#    그래서 기본 목록(searx/settings.yml)을 그대로 옮겨 적고 우리 것을 더한다.
+plugins:
+  searx.plugins.calculator.SXNGPlugin:
+    active: true
+  searx.plugins.infinite_scroll.SXNGPlugin:
+    active: false
+  searx.plugins.hash_plugin.SXNGPlugin:
+    active: true
+  searx.plugins.self_info.SXNGPlugin:
+    active: true
+  searx.plugins.unit_converter.SXNGPlugin:
+    active: true
+  searx.plugins.ahmia_filter.SXNGPlugin:
+    active: true
+  searx.plugins.hostnames.SXNGPlugin:
+    active: true
+  searx.plugins.time_zone.SXNGPlugin:
+    active: true
+  searx.plugins.oa_doi_rewrite.SXNGPlugin:
+    active: false
+  searx.plugins.tor_check.SXNGPlugin:
+    active: false
+  searx.plugins.tracker_url_remover.SXNGPlugin:
+    active: true
+  searx.plugins.browser_escalate.SXNGPlugin:
+    active: true

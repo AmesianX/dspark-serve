@@ -1,0 +1,24 @@
+{"t": 1795737863.408, "method": "GET", "path": "/v1/models", "status": 200}
+{"t": 1795737863.413, "method": "POST", "path": "/v1/chat/completions", "priority": "ABSENT", "n_msgs": 1, "stream": null, "model": "glm-5.3-flash", "status": 400, "err": "{\"error\":{\"message\":\"At most 5 image(s) may be provided in one prompt. (parameter=image)\",\"type\":\"BadRequestError\",\"param\":\"image\",\"code\":400}}"}
+{"t": 1795737863.854, "method": "GET", "path": "/v1/models", "status": 200}
+{"t": 1795737863.862, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737864.57, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737882.076, "method": "POST", "path": "/v1/chat/completions", "priority": "ABSENT", "n_msgs": 2, "stream": true, "model": "glm-5.3-flash", "status": 200}
+{"t": 1795737882.119, "method": "POST", "path": "/v1/chat/completions", "priority": 1, "n_msgs": 2, "stream": true, "model": "glm-5.3-flash", "status": 400, "injected": true}
+{"t": 1795737882.123, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737882.142, "method": "POST", "path": "/v1/chat/completions", "priority": 1, "n_msgs": 2, "stream": true, "model": "glm-5.3-flash", "status": 400, "injected": true}
+{"t": 1795737882.832, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737883.54, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737884.247, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737884.955, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737885.663, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737892.78, "method": "POST", "path": "/v1/chat/completions", "priority": "ABSENT", "n_msgs": 2, "stream": true, "model": "glm-5.3-flash", "status": 200}
+{"t": 1795737892.817, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737893.125, "method": "POST", "path": "/v1/chat/completions", "priority": "ABSENT", "n_msgs": 2, "stream": true, "model": "glm-5.3-flash", "status": 200}
+{"t": 1795737893.527, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737898.076, "method": "POST", "path": "/v1/chat/completions", "priority": "ABSENT", "n_msgs": 4, "stream": true, "model": "glm-5.3-flash", "status": 200}
+{"t": 1795737898.758, "method": "POST", "path": "/v1/chat/completions", "priority": "ABSENT", "n_msgs": 4, "stream": true, "model": "glm-5.3-flash", "status": 200}
+{"t": 1795737898.798, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737899.506, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737900.214, "method": "GET", "path": "/metrics", "status": 200}
+{"t": 1795737902.186, "method": "POST", "path": "/v1/chat/completions", "priority": "ABSENT", "n_msgs": 5, "stream": true, "model": "glm-5.3-flash", "status": 200}

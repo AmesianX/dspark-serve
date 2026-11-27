@@ -1,0 +1,8 @@
+   Maximum concurrency for 524,288 tokens per request: 2.42x
+== ref saved
+[SYNC]   헤드 == 워커(10.0.1.2) (674 files, exp/glm53-kv-offload@07f19ab)
+   Maximum concurrency for 524,288 tokens per request: 2.42x
+1
+E5-A: alone==ref_alone True  co==ref_alone True  co==alone True
+E5-B: alone==ref_alone True  co==ref_alone True  co==alone True
+E5-D: alone==ref_alone True  co==ref_alone False  co==alone False

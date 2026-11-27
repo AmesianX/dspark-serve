@@ -3196,12 +3196,53 @@ class Scheduler(SchedulerInterface):
         # these requests must be rescheduled, but only the first will recompute
         # it. This set tracks blocks already marked for recomputation.
         marked_invalid_block_ids: set[int] = set()
+        groups = self.kv_cache_config.kv_cache_groups
         for request in requests:
             is_affected = False
             marked_invalid_block = False
             req_id = request.request_id
-            # TODO (davidb): add support for hybrid memory allocator
-            (req_block_ids,) = self.kv_cache_manager.get_block_ids(req_id)
+            group_block_ids = self.kv_cache_manager.get_block_ids(req_id)
+            if len(group_block_ids) > 1:
+                # [ours] glm53 (exp/glm53-kv-offload): hybrid models (MLA +
+                # KDA state + kpool tail groups). Upstream only handles one
+                # group. Truncate to the earliest invalid block over all
+                # prefix-caching groups. The KV offload connector reports
+                # every destination block of a failed load as invalid, so
+                # this lands on the locally cached prefix, where both the
+                # attention pages and the recurrent state are valid. Each
+                # affected request recomputes on its own (no shared marking).
+                req_num_computed_tokens = (
+                    request.num_computed_tokens - num_scheduled_tokens.get(req_id, 0)
+                )
+                truncate_to: int | None = None
+                for g, req_block_ids in enumerate(group_block_ids):
+                    spec = groups[g].kv_cache_spec
+                    if not getattr(spec, "participates_in_prefix_caching", True):
+                        continue
+                    bs = spec.block_size
+                    n = (req_num_computed_tokens + bs - 1) // bs
+                    for idx, block_id in zip(range(n), req_block_ids):
+                        if block_id in invalid_block_ids:
+                            pos = idx * bs
+                            if truncate_to is None or pos < truncate_to:
+                                truncate_to = pos
+                            if evict_blocks:
+                                blocks_to_evict.update(req_block_ids[idx:])
+                            break
+                if truncate_to is not None:
+                    truncate_to = min(truncate_to, req_num_computed_tokens)
+                    request.num_computed_tokens = truncate_to
+                    total_affected_tokens += req_num_computed_tokens - truncate_to
+                    affected_req_ids.add(req_id)
+                    logger.warning(
+                        "KV load failure: request %s recomputes from token %d "
+                        "(%d tokens)",
+                        req_id,
+                        truncate_to,
+                        req_num_computed_tokens - truncate_to,
+                    )
+                continue
+            (req_block_ids,) = group_block_ids
             # We iterate only over blocks that may contain externally computed
             # tokens
             req_num_computed_tokens = (

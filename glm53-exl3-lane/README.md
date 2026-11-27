@@ -1,7 +1,10 @@
 # GLM-5.3-Flash EXL3 lane (2×DGX Spark GB10) — 운영 문서
 
 설치·업그레이드는 저장소 루트 [`README.md`](../README.md). 패치 원리·함정은 [`HANDOFF.md`](HANDOFF.md).
-이 디렉터리는 **양 노드(헤드/워커) 같은 경로·같은 내용**이어야 한다(`sync-lane-67.sh` 가 맞춘다). 최종 갱신 2026-11-01.
+이 디렉터리는 **양 노드(헤드/워커) 같은 경로·같은 내용**이어야 한다(`sync-lane-67.sh` 가 맞춘다). 최종 갱신 2026-11-27.
+
+> **브랜치 `exp/glm53-kv-offload`(현재 서빙 중, 필드 테스트)**: NVMe KV 오프로드 + 온도0 배치 불변 + priority 스케줄링.
+> main 병합은 필드 테스트 후. 이 브랜치의 운영 설정·결과는 아래 표의 세 문서가 정본.
 
 ### 문서 지도 — 뭘 찾을 때 어디를 보는가
 
@@ -10,6 +13,9 @@
 | 기동·정지·상태 확인, 현 설정값, 실측 t/s | **이 문서** | 현행 |
 | 이미지(비전) — 설정·안전범위·측정법·**이미 실패한 시도** | **`VISION.md` §0 필독** | 현행 |
 | 왜 이렇게 패치했나, 다시 밟지 말 함정 | `HANDOFF.md` | 현행 |
+| NVMe KV 오프로드 설계·운영 설정·퇴출·무결성·실측 | `KV_OFFLOAD.md` | 현행(브랜치) |
+| 오프로드 검증 절차(E1~E6·S1~S5·2단계) — 다른 머신 이식 시 그대로 | `KV_OFFLOAD_TESTPLAN.md` | 현행(브랜치) |
+| 온도0 동시 배치 비결정 해결(배치 불변) — 원인·해법·함정·진단 스위치 | `BATCH_INVARIANCE.md` | 현행(브랜치) |
 | `/ab` 검열 해제 스위치 사용·원리 | `AB-SWITCH.md` | 현행 |
 | UTF-8 바이트 가드 설계·검증 | `UTF8-GUARD.md` | 현행 |
 | 왜 abliterated 대신 원본을 서빙하는가 | `ORIGINAL-VS-ABLITERATED.md` | 배경(9~10월) |
@@ -31,7 +37,7 @@
 - 실험은 브랜치에서(`git switch -c exp/...`), 되돌림은 `git switch main` → `./sync-lane-67.sh` → RESTARTALL. 이미지 태그 v2.3-tier1 은 rmi/retag 금지.
 - 재부팅 후에도 수동 RESTARTALL(systemd 유닛 없음). READY까지 약 210~255초, 첫 요청은 JIT 워밍으로 느림.
 - 서빙 중 헤드에서 무거운 작업 금지(통합메모리). memwatch 가 가용 3GB 밑이면 컨테이너를 선제 정지한다.
-- API: `http://<헤드 LAN IP>:8000/v1`, 모델명 `glm-5.3-flash`, 키는 env 의 `VLLM_API_KEY`. 검열 해제 스위치 `POST /ab {"scale":0|1}`(`AB-SWITCH.md`).
+- API: `http://<헤드 LAN IP>:8000/v1`, 모델명 `glm-5.3-flash`, 키는 env 의 `VLLM_API_KEY`. 검열 해제는 요청별 `"vllm_xargs":{"ab_scale":1}` 만(`POST /ab` 는 410 — 전역 스위치 없음, `AB-SWITCH.md`).
 
 ## 2. 파일
 | 파일 | 역할 |
@@ -72,6 +78,7 @@
   routed 전문가 SwiGLU clamp(`VLLM_EXL3_MOE_SWIGLU_CLAMP=1`), temperature 0 결정성(`B12X_DENSE_SPLITK_TURBO=0` + 오버레이 2개),
   '!' 붕괴 수정(`overlay/v2runner/`), kpool 캐시 수정(`overlay/glm5next/ops/`).
 - 프리픽스 캐시: `VLLM_PREFIX_CACHE_RETENTION_INTERVAL=18432`(mamba 스냅샷 솎기, 근거는 env 주석).
+- **브랜치 `exp/glm53-kv-offload` 차이**: KV 10e9/노드 + `KV_OFFLOAD=1`(NVMe 200GB/노드, 재기동 후에도 캐시 생존), `VLLM_PREFIX_HASH_SEED`=`KV_OFFLOAD_HASH_SEED`(현재 `glm53-kv-offload-bi-1`, 커널·수치 바꾸면 갈 것), `GLM53_BATCH_INVARIANT=1`, `SCHED_POLICY=priority`(codemason 서브에이전트=priority 1), `MTP_PER_BATCH=[[1,1,4],[2,2,3],[3,4,2]]`. 정본 블록은 `KV_OFFLOAD.md` '운영 설정'.
 
 ## 4. 실측 원장
 
@@ -159,7 +166,7 @@ BF16 이라 두 체크포인트 차이를 rank-24 어댑터(29MB)로 뽑아 출�
 재기동·재프리필·그래프 재캡처 없음. 상세·실측·이식 메모는 `AB-SWITCH.md`.
 
 기동은 그냥 `./vllm-glm53-exl3.sh RESTARTALL`(원본 + 어댑터가 기본), 조작은
-`POST /ab {"scale":0|1}` 또는 codemason `/ab off|on|auto`. 실측: 거부 5/16 → 0/16,
+요청별 `vllm_xargs.ab_scale`(codemason `/ab off|on|auto` 가 요청마다 실음, 전역 `POST /ab` 는 11-27 제거). 실측: 거부 5/16 → 0/16,
 작화는 꺼진 상태 4/60(abliterated 통째 서빙은 18~22/60), 속도 손실 스텝당 1~2ms,
 temperature 0 결정성 양쪽 모두 유지(12/12). `STATUS` 가 스위치 상태를 표시한다.
 

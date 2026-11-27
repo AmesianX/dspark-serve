@@ -1,0 +1,23 @@
+   Maximum concurrency for 524,288 tokens per request: 2.42x
+3
+{"phase": "warm4", "X": ""}
+{"phase": "alone", "X": "# 전체 구조 요약 (5줄)\n\n1. **Scheduler (v1"}
+{"phase": "co", "X": "# 전체 구조 요약 (5줄)\n\n1. **scheduler.py**는 vLLM V1 엔진의 핵심 스케줄러로, `schedule()`에서 running/waiting 큐의 요청들에 토큰 예"}
+[WORKER] memwatch off
+rows alone 1019 batch 3098 common (pos,tok) 1008
+rows identical through final norm: 0 / 1008
+first divergence at (0, '1b_c2_conv') rows 62
+first divergence at (0, '1b_c3_init_state') rows 2
+first divergence at (0, '1b_d_recurrent') rows 2
+first divergence at (3, '2_attn_out') rows 4
+first divergence at (3, '2a_idx_k') rows 1
+first divergence at (3, '2a_idx_w') rows 920
+first divergence at (-1, '5_final_norm') rows 17
+pos 147968 first@(3, '2a_idx_w') maxdiff 4.66e-10 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 147969 first@(3, '2a_idx_w') maxdiff 1.86e-09 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 147970 first@(3, '2a_idx_w') maxdiff 9.31e-10 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 147971 first@(3, '2a_idx_w') maxdiff 9.31e-10 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 147972 first@(3, '2a_idx_w') maxdiff 9.31e-10 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 147973 first@(3, '2a_idx_w') maxdiff 9.31e-10 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 147974 first@(3, '2a_idx_w') maxdiff 6.98e-10 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 147975 first@(3, '2a_idx_w') maxdiff 9.31e-10 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1

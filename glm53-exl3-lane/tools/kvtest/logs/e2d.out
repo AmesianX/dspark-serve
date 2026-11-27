@@ -1,0 +1,13 @@
+   Maximum concurrency for 524,288 tokens per request: 2.42x
+{"tag": "C1_cold", "prompt_tokens": 82375, "cached": null, "ttft_s": 60.5, "completion_tokens": 80, "decode_tps": 38.6}
+{"tag": "C2_cold", "prompt_tokens": 82374, "cached": null, "ttft_s": 60.44, "completion_tokens": 80, "decode_tps": 34.8}
+{"tag": "C3_cold", "prompt_tokens": 82374, "cached": null, "ttft_s": 60.66, "completion_tokens": 80, "decode_tps": 37.2}
+{"tag": "C1_touch", "prompt_tokens": 82375, "cached": null, "ttft_s": 1.28, "completion_tokens": 80, "decode_tps": 38.3}
+{"tag": "C4_cold", "prompt_tokens": 82377, "cached": null, "ttft_s": 60.48, "completion_tokens": 80, "decode_tps": 30.3, "slots": ["100 by group: {4: 13, 0: 59, 3: 14, 2: 14}", "100 by group: {4: 13, 0: 59, 3: 14, 2: 14}"]}
+{"tag": "mem_floor_fill", "mem_floor_gb": {"head": 6.91, "worker": 9.4}}
+   Maximum concurrency for 524,288 tokens per request: 2.42x
+{"tag": "C4_after_restart", "prompt_tokens": 82377, "cached": null, "ttft_s": 7.62, "completion_tokens": 80, "decode_tps": 30.1, "same_as_cold": true}
+{"tag": "C1_after_restart", "prompt_tokens": 82375, "cached": null, "ttft_s": 7.0, "completion_tokens": 80, "decode_tps": 38.5, "same_as_cold": true}
+{"tag": "C3_after_restart", "prompt_tokens": 82374, "cached": null, "ttft_s": 7.04, "completion_tokens": 80, "decode_tps": 37.5, "same_as_cold": true}
+{"tag": "C2_after_restart", "prompt_tokens": 82374, "cached": null, "ttft_s": 46.87, "completion_tokens": 80, "decode_tps": 35.8, "same_as_cold": true}
+{"tag": "mem_floor_verify", "mem_floor_gb": {"head": 6.73, "worker": 9.45}}

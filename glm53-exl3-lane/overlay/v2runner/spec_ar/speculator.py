@@ -2,6 +2,8 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 from typing import Any
 
+import os
+
 import torch
 import torch.nn as nn
 
@@ -41,6 +43,15 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
             self.max_num_tokens, self.hidden_size, dtype=self.dtype, device=device
         )
         self.current_draft_step = torch.tensor(0, dtype=torch.int64, device=device)
+        # [ours] glm53 GLM53_MTP_CONF_PROBE: per-request, per-draft-position
+        # max softmax probability of the greedy draft (a calibration probe for
+        # confidence-based verification budgets). Off = no buffer, no extra op.
+        self.draft_conf: torch.Tensor | None = None
+        if os.environ.get("GLM53_MTP_CONF_PROBE"):
+            self.draft_conf = torch.zeros(
+                self.max_num_reqs, self.num_speculative_steps,
+                dtype=torch.float32, device=device,
+            )
         self.active_num_reqs = torch.tensor(0, dtype=torch.int32, device=device)
         self.last_token_indices = torch.zeros(
             self.max_num_reqs, dtype=torch.int64, device=device
@@ -413,6 +424,12 @@ class AutoRegressiveSpeculator(DraftModelSpeculator):
                 active_rows=self.active_num_reqs,
             )
         else:
+            if self.draft_conf is not None:
+                # Graph-safe: static buffer, tensor indices only.
+                conf = torch.softmax(logits.float(), dim=-1).amax(dim=-1)
+                self.draft_conf.index_put_(
+                    (idx_mapping, draft_step.expand_as(idx_mapping)), conf
+                )
             return logits.argmax(dim=-1)
 
     @torch.inference_mode()
@@ -938,3 +955,53 @@ def update_draft_inputs(
         BLOCK_SIZE=1024,
         ADVANCE_DRAFT_POSITIONS=advance_draft_positions,
     )
+
+
+class MtpConfidenceProbe:
+    """[ours] glm53: pair each verified draft position with its draft
+    confidence. Histogram over (position, 20 probability bins) of evaluated
+    and accepted drafts, dumped as JSON every `every` verify steps.
+
+    Position i of a request that verified k drafts and accepted a of them is
+    evaluated iff i <= a and i < k; it is accepted iff i < a.
+    """
+
+    BINS = 20
+
+    def __init__(self, path: str, num_positions: int, device: torch.device,
+                 every: int = 200):
+        self.path = path
+        self.k = num_positions
+        self.every = every
+        self.calls = 0
+        self.evaluated = torch.zeros(num_positions * self.BINS, dtype=torch.int64,
+                                     device=device)
+        self.accepted = torch.zeros_like(self.evaluated)
+        self.pos = torch.arange(num_positions, device=device).view(1, -1)
+
+    def observe(self, draft_conf, idx_mapping, num_sampled, num_draft_np) -> None:
+        n = idx_mapping.shape[0]
+        if n == 0 or num_draft_np is None:
+            return
+        conf = draft_conf[idx_mapping[:n]]
+        acc = (num_sampled[:n].to(torch.int64) - 1).clamp(min=0).view(-1, 1)
+        kk = torch.as_tensor(num_draft_np[:n], device=conf.device).view(-1, 1)
+        evaluated = (self.pos <= acc) & (self.pos < kk)
+        accepted = (self.pos < acc) & evaluated
+        bins = (conf * self.BINS).long().clamp_(0, self.BINS - 1)
+        flat = (self.pos * self.BINS + bins).expand_as(bins)
+        self.evaluated.index_add_(0, flat[evaluated], torch.ones_like(flat[evaluated]))
+        self.accepted.index_add_(0, flat[accepted], torch.ones_like(flat[accepted]))
+        self.calls += 1
+        if self.calls % self.every == 0:
+            self.dump()
+
+    def dump(self) -> None:
+        import json
+        ev = self.evaluated.view(self.k, self.BINS).tolist()
+        ac = self.accepted.view(self.k, self.BINS).tolist()
+        tmp = self.path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"bins": self.BINS, "evaluated": ev, "accepted": ac,
+                       "steps": self.calls}, f)
+        os.replace(tmp, self.path)

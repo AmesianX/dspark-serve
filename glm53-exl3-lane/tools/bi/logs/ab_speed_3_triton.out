@@ -1,0 +1,27 @@
+[SYNC]   헤드 == 워커(10.0.1.2) (690 files, exp/glm53-kv-offload@2f4433a)
+   Maximum concurrency for 524,288 tokens per request: 2.42x
+== off: BI env head= worker= eager=0
+[off] hash-map  34.4 t/s | accept/step 1.849 | 스텝  12.1/s ( 82.3ms)
+[off] 한국어산문     38.5 t/s | accept/step 2.082 | 스텝  12.4/s ( 80.4ms)
+[off] 한국어코드     41.3 t/s | accept/step 2.393 | 스텝  12.3/s ( 81.6ms)
+[off] prompt 82385 ttft 59.98s -> prefill 1374 t/s
+[off] prompt 82385 ttft 59.81s -> prefill 1377 t/s
+[SYNC]   헤드 == 워커(10.0.1.2) (690 files, exp/glm53-kv-offload@2f4433a)
+   Maximum concurrency for 524,288 tokens per request: 2.42x
+== on: BI env head=1 worker=1 eager=0
+[on] hash-map  35.0 t/s | accept/step 1.913 | 스텝  12.0/s ( 83.2ms)
+[on] 한국어산문     39.0 t/s | accept/step 2.283 | 스텝  11.9/s ( 83.7ms)
+[on] 한국어코드     44.5 t/s | accept/step 2.741 | 스텝  12.0/s ( 83.3ms)
+[on] prompt 82382 ttft 61.77s -> prefill 1334 t/s
+[on] prompt 82386 ttft 61.54s -> prefill 1339 t/s
+E5-A co==alone True
+E5-B co==alone True
+E5-D co==alone True
+[conc 0] A: same=True  cached seq=None conc=None  ttft seq=1.52 conc=5.73
+[conc 0] B: same=True  cached seq=None conc=None  ttft seq=1.5 conc=5.72
+[conc 0] C: same=True  cached seq=None conc=None  ttft seq=112.98 conc=5.72
+[conc 0] D: same=True  cached seq=None conc=None  ttft seq=1.5 conc=1.53
+[conc 1] A: same=True  cached seq=None conc=None  ttft seq=1.52 conc=1.55
+[conc 1] B: same=True  cached seq=None conc=None  ttft seq=1.5 conc=5.73
+[conc 1] C: same=True  cached seq=None conc=None  ttft seq=112.98 conc=5.73
+[conc 1] D: same=True  cached seq=None conc=None  ttft seq=1.5 conc=5.73

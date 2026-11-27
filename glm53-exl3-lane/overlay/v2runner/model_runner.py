@@ -26,6 +26,8 @@ from copy import deepcopy
 from typing import Any, NamedTuple
 
 import numpy as np
+import os
+
 import torch
 import torch.nn as nn
 
@@ -163,6 +165,12 @@ from vllm.v1.worker.utils import (
 )
 from vllm.v1.worker.workspace import lock_workspace, use_workspace_lane
 
+# LANE PATCH (2026-11-20): per-request abliteration scale, see ab_switch.py.
+try:
+    import ab_switch as _ab_switch
+except Exception:  # pragma: no cover - lane overlay absent
+    _ab_switch = None
+
 logger = init_logger(__name__)
 
 
@@ -234,6 +242,8 @@ def _profile_batch_phase(input_batch: InputBatch, dummy_run: bool = False) -> st
     return "prefill"
 
 
+_BI_ROLE_RUNNER = any(os.environ.get(v, "0") == "1" for v in ("GLM53_BI_MOE", "GLM53_BI_ROUTER", "GLM53_BI_INDEXER", "GLM53_BI_DENSE", "GLM53_BI_MHC", "GLM53_BI_MLA"))
+
 class GPUModelRunner(LoRAModelRunnerMixin):
     def __init__(self, vllm_config: VllmConfig, device: torch.device):
         self.vllm_config = vllm_config
@@ -268,6 +278,12 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         self.max_model_len = self.model_config.max_model_len
         self.max_num_tokens = self.scheduler_config.max_num_batched_tokens
         self.max_num_reqs = self.scheduler_config.max_num_seqs
+        if _ab_switch is not None:
+            # Must precede every forward: _dummy_run does not go through
+            # prepare_inputs, so profiling and graph capture would otherwise
+            # reach ab_switch.apply with no buffer and capture the scalar
+            # branch. __init__ cannot be reordered after them.
+            _ab_switch.reserve(self.max_num_tokens, self.device)
         self.is_encoder_decoder = self.model_config.is_encoder_decoder
 
         self.output_copy_stream = torch.cuda.Stream(self.device)
@@ -1270,6 +1286,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         torch.accelerator.synchronize()
 
     def _remove_request(self, req_id: str) -> bool:
+        if _ab_switch is not None:
+            _ab_switch.forget_request(req_id)
         # Call model_state.remove_request *before* req_states.remove_request
         # so the model_state can still look up the slot index.
         self.model_state.remove_request(req_id)
@@ -1333,6 +1351,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 num_computed_tokens=new_req_data.num_computed_tokens,
                 max_tokens=sampling_params.max_tokens if sampling_params else 1,  # type: ignore[arg-type]
             )
+            if _ab_switch is not None:
+                _ab_switch.note_request(req_id, sampling_params)
             req_index = self.req_states.req_id_to_index[req_id]
             if self.verification_capacity_manager is not None:
                 self.verification_capacity_manager.add_request(req_index)
@@ -1423,6 +1443,12 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         req_ids = sort_batch_req_ids(num_tokens_per_req, self.decode_query_len)
         numtoks_iter = map(num_tokens_per_req.__getitem__, req_ids)
         num_scheduled_tokens = np.fromiter(numtoks_iter, dtype=np.int32, count=num_reqs)
+        if _ab_switch is not None:
+            # Tokens sit contiguously per request in req_ids order, which is
+            # exactly what query_start_loc's cumsum below assumes.
+            _ab_switch.fill_token_scales(
+                req_ids, num_scheduled_tokens, num_tokens_after_padding
+            )
 
         idx_mapping_iter = map(self.req_states.req_id_to_index.__getitem__, req_ids)
         idx_mapping_np = np.fromiter(idx_mapping_iter, dtype=np.intp, count=num_reqs)
@@ -1494,6 +1520,19 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         computed_prefill_tokens_np = self.req_states.num_computed_prefill_tokens
         num_computed_prefill_tokens_np = computed_prefill_tokens_np[idx_mapping_np]
         is_prefilling_np = num_computed_prefill_tokens_np < prefill_len_np
+        if _BI_ROLE_RUNNER:
+            # [ours] batch-invariance role from host data (no device sync): the
+            # leading requests past their prompt are decode rows.
+            from vllm.model_executor.layers.quantization import exl3 as _bi_exl3
+
+            _pf = is_prefilling_np[:num_reqs]
+            _nd = int(np.argmax(_pf)) if _pf.any() else num_reqs
+            if _nd == num_reqs:
+                _bi_exl3.bi_set_runner(True, -1)
+            elif _pf[_nd:].all():
+                _bi_exl3.bi_set_runner(False, int(query_start_loc_np[_nd]), _nd)
+            else:
+                _bi_exl3.bi_set_runner(False, -1)
 
         # Get prefill tokens if any.
         if np.any(is_prefilling_np):
@@ -2197,6 +2236,26 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         with record_function_or_nullcontext(f"vllm:v2/target/{phase}/sample_tokens"):
             sampler_output, num_sampled, num_rejected = self.sample(
                 hidden_states, input_batch, grammar_output
+            )
+        # [ours] glm53 GLM53_MTP_CONF_PROBE: draft-confidence calibration.
+        _probe = getattr(self, "_mtp_conf_probe", None)
+        if _probe is None and self.speculator is not None and getattr(
+            self.speculator, "draft_conf", None
+        ) is not None and torch.distributed.get_rank() == 0:
+            from vllm.v1.worker.gpu.spec_decode.autoregressive.speculator import (
+                MtpConfidenceProbe,
+            )
+            _probe = self._mtp_conf_probe = MtpConfidenceProbe(
+                os.environ["GLM53_MTP_CONF_PROBE"],
+                self.speculator.draft_conf.shape[1],
+                self.device,
+            )
+        if _probe is not None and input_batch.num_draft_tokens_per_req is not None:
+            _probe.observe(
+                self.speculator.draft_conf,
+                input_batch.idx_mapping,
+                num_sampled,
+                input_batch.num_draft_tokens_per_req,
             )
 
         if self.pp_handler is not None:

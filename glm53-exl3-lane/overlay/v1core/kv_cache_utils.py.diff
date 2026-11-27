@@ -1,0 +1,15 @@
+--- v1core/kv_cache_utils.py.orig	2026-11-26 17:29:48.142191473 +0900
++++ v1core/kv_cache_utils.py	2026-11-26 17:29:48.157191668 +0900
+@@ -103,7 +103,11 @@
+ def init_none_hash(hash_fn: Callable[[Any], bytes]):
+     global NONE_HASH
+ 
+-    hash_seed = os.getenv("PYTHONHASHSEED")
++    # [ours] glm53 (exp/glm53-kv-offload): a dedicated, persistent prefix-hash
++    # seed so NVMe-offloaded KV keeps its keys across restarts, without
++    # setting PYTHONHASHSEED (which changes hash() process-wide and with it
++    # JIT cache keys).
++    hash_seed = os.getenv("VLLM_PREFIX_HASH_SEED") or os.getenv("PYTHONHASHSEED")
+     if hash_seed is None and hash_fn in _CBOR_HASH_FUNCTIONS:
+         logger.warning(
+             "PYTHONHASHSEED is not set. This will lead to non-reproducible "

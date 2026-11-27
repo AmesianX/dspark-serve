@@ -1,0 +1,21 @@
+   Maximum concurrency for 524,288 tokens per request: 2.42x
+{"phase": "co", "X": "# 전체 구조 요약 (5줄)\n\n1. **Scheduler (v1/core/sched/scheduler.py)**
+[WORKER] memwatch off
+rows identical through final norm: 79 / 1018
+first divergence at (0, '1b_c2_conv') rows 79
+first divergence at (0, '1b_c3_init_state') rows 2
+first divergence at (3, '2_attn_out') rows 1
+first divergence at (3, '2a_idx_k') rows 1
+first divergence at (4, '1b_c2_conv') rows 6
+first divergence at (4, '1b_d_recurrent') rows 751
+first divergence at (-1, '5_final_norm') rows 99
+pos 148050 first@(-1, '5_final_norm') maxdiff 1.14e+00 alone: file0 rows_in_fwd=994 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 148051 first@(-1, '5_final_norm') maxdiff 4.30e-01 alone: file0 rows_in_fwd=994 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 148052 first@(-1, '5_final_norm') maxdiff 1.16e+00 alone: file0 rows_in_fwd=994 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 148053 first@(-1, '5_final_norm') maxdiff 1.46e+00 alone: file0 rows_in_fwd=994 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 148054 first@(-1, '5_final_norm') maxdiff 8.12e-01 alone: file0 rows_in_fwd=994 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 148055 first@(-1, '5_final_norm') maxdiff 9.87e-01 alone: file0 rows_in_fwd=994 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 148056 first@(-1, '5_final_norm') maxdiff 6.35e-01 alone: file0 rows_in_fwd=994 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 148057 first@(-1, '5_final_norm') maxdiff 1.43e+00 alone: file0 rows_in_fwd=994 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 148058 first@(-1, '5_final_norm') maxdiff 7.51e-01 alone: file0 rows_in_fwd=994 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 148059 first@(-1, '5_final_norm') maxdiff 3.63e-01 alone: file0 rows_in_fwd=994 occ=1 | batch: file3 rows_in_fwd=2975 occ=1

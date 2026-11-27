@@ -49,6 +49,12 @@ RADIX_TOPK_WORKSPACE_SIZE = 1024 * 1024
 _PERSISTENT_TOPK_OP = None
 
 
+import os as _bi_os
+_BI_DBG_POS = int(_bi_os.environ.get("GLM53_BI_DBG_POS", "-1") or -1)
+_BI_ZERO_GATHER = _bi_os.environ.get("GLM53_BI_ZERO_GATHER", "0") == "1"
+_BI_IDX_DUMP = _bi_os.environ.get("GLM53_BI_IDX_DUMP") or None
+_BI_IDX_N = [0]
+
 def _persistent_topk_op():
     """Resolve the decode top-k op, honoring the GLM53_TOPK_FIX_SO override.
 
@@ -647,6 +653,11 @@ def sparse_attn_indexer_kpool(
                         token_to_seq=chunk.token_to_seq,
                     )
                 else:
+                    if _BI_ZERO_GATHER:
+                        # [ours] diagnostic: expose gather holes (stale rows from the
+                        # previous chunk/layer would otherwise mask them)
+                        k_quant.zero_()
+                        k_scale.zero_()
                     ops.cp_gather_indexer_k_quant_cache(
                         kv_cache,
                         k_quant,
@@ -655,6 +666,18 @@ def sparse_attn_indexer_kpool(
                         chunk.cu_seq_lens,
                     )
 
+            if _BI_DBG_POS >= 0 and positions is not None:
+                _pp = positions[chunk.token_start : chunk.token_end]
+                _hit = (_pp == _BI_DBG_POS).nonzero(as_tuple=True)[0]
+                if _hit.numel():
+                    _r = int(_hit[0])
+                    print(
+                        f"[BI-IDX] chunk tok[{chunk.token_start},{chunk.token_end}) reqs={chunk.num_reqs} "
+                        f"total_seq_lens={chunk.total_seq_lens} skip_gather={chunk.skip_kv_gather} "
+                        f"row={_r} ks={int(chunk.cu_seqlen_ks[_r])} ke={int(chunk.cu_seqlen_ke[_r])} "
+                        f"cu_seq_lens={chunk.cu_seq_lens.tolist()} n_dec_tok={num_decode_tokens}",
+                        flush=True,
+                    )
             q_slice = q_quant[chunk.token_start : chunk.token_end]
             q_scale_slice = (
                 q_scale[chunk.token_start : chunk.token_end]
@@ -696,6 +719,24 @@ def sparse_attn_indexer_kpool(
                     clean_logits=False,
                 )
             num_rows = logits.shape[0]
+            if _BI_IDX_DUMP and positions is not None:
+                _pp = positions[chunk.token_start : chunk.token_end]
+                _hit = (_pp == _BI_DBG_POS).nonzero(as_tuple=True)[0]
+                if _hit.numel():
+                    _r = int(_hit[0])
+                    _ks, _ke = int(chunk.cu_seqlen_ks[_r]), int(chunk.cu_seqlen_ke[_r])
+                    _bi_os.makedirs(_BI_IDX_DUMP, exist_ok=True)
+                    _BI_IDX_N[0] += 1
+                    torch.save(
+                        {
+                            "logits": logits[_r, _ks:_ke].float().cpu(),
+                            "q": q_slice[_r].view(torch.uint8).cpu(),
+                            "w": weights[chunk.token_start + _r].float().cpu(),
+                            "k": k_quant[:_ke].view(torch.uint8).cpu(),
+                            "ks": k_scale[:_ke].view(torch.uint8).cpu(),
+                        },
+                        _bi_os.path.join(_BI_IDX_DUMP, f"c{_BI_IDX_N[0]:04d}.pt"),
+                    )
 
             # kpool: logits are pool-granular (compress_ratio == index_kpool),
             # so topk selects pools. We pick topk_tokens // kpool pools then

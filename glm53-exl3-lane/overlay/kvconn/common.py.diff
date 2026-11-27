@@ -1,0 +1,34 @@
+--- common.py.orig	2026-11-26 17:06:28.907189052 +0900
++++ common.py	2026-11-26 17:07:42.909392897 +0900
+@@ -84,11 +84,18 @@
+ 
+     completed_jobs: dict[int, int] = field(default_factory=dict)
+     transfer_stats: TransferStats = field(default_factory=TransferStats)
++    # [ours] glm53: jobs this worker finished unsuccessfully (also counted in
++    # completed_jobs so the scheduler's pending count still reaches zero).
++    failed_jobs: dict[int, int] = field(default_factory=dict)
+ 
+     def mark_completed(self, job_id: int) -> None:
+         """Record a transfer job completion from this worker."""
+         self.completed_jobs[job_id] = 1
+ 
++    def mark_failed(self, job_id: int) -> None:
++        """[ours] glm53: record that this worker's part of a job failed."""
++        self.failed_jobs[job_id] = 1
++
+     def aggregate(
+         self, other: "KVConnectorWorkerMetadata"
+     ) -> "KVConnectorWorkerMetadata":
+@@ -98,7 +105,12 @@
+         for job_id, v in other.completed_jobs.items():
+             merged[job_id] = merged.get(job_id, 0) + v
+ 
++        failed = dict(self.failed_jobs)
++        for job_id, v in other.failed_jobs.items():
++            failed[job_id] = failed.get(job_id, 0) + v
++
+         return OffloadingWorkerMetadata(
+             completed_jobs=merged,
+             transfer_stats=self.transfer_stats.aggregate(other.transfer_stats),
++            failed_jobs=failed,
+         )

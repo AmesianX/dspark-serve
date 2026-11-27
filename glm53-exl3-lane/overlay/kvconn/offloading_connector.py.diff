@@ -1,0 +1,29 @@
+--- offloading_connector.py.orig	2026-11-26 17:06:28.909629732 +0900
++++ offloading_connector.py	2026-11-26 17:13:40.392166108 +0900
+@@ -61,7 +61,11 @@
+     ) -> bool:
+         extra_config = kv_transfer_config.kv_connector_extra_config or {}
+         spec_name = extra_config.get("spec_name", "CPUOffloadingSpec")
+-        return spec_name == "CPUOffloadingSpec"
++        # [ours] glm53: NvmeOffloadingSpec copies GPU pages with ordinary CUDA
++        # copies through the runtime's own tensors (virtual addresses) into its
++        # own pinned bounce buffers; it registers no GPU memory anywhere, so a
++        # VMM remap cannot leave it with stale physical pages.
++        return spec_name in ("CPUOffloadingSpec", "NvmeOffloadingSpec")
+ 
+     @property
+     def prefer_cross_layer_blocks(self) -> bool:
+@@ -149,6 +153,13 @@
+ 
+         return self.connector_worker.get_finished(finished_req_ids)
+ 
++    def get_block_ids_with_load_errors(self) -> set[int]:
++        # [ours] glm53: surface failed loads so the scheduler recomputes them
++        # (requires kv_load_failure_policy="recompute").
++        if self.connector_worker is not None:
++            return self.connector_worker.get_block_ids_with_load_errors()
++        return set()
++
+     def build_connector_worker_meta(self) -> OffloadingWorkerMetadata | None:
+         if self.connector_worker is not None:
+             return self.connector_worker.build_connector_worker_meta()

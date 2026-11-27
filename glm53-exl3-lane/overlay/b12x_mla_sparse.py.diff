@@ -1,6 +1,62 @@
---- b12x_mla_sparse.py.orig	2026-09-02 16:31:00.000000000 +0900
-+++ b12x_mla_sparse.py	2026-09-28 16:03:17.656257919 +0900
-@@ -2655,7 +2655,24 @@
+--- overlay/b12x_mla_sparse.py.orig	2026-11-26 16:43:58.478549419 +0900
++++ overlay/b12x_mla_sparse.py	2026-11-27 06:18:15.035415288 +0900
+@@ -28,6 +28,9 @@
+ import inspect
+ import os
+ import weakref
++
++_BI_MLA = os.environ.get("GLM53_BI_MLA", "0") == "1"
++_BI_ROLE_ON = _BI_MLA or any(os.environ.get(v, "0") == "1" for v in ("GLM53_BI_MOE", "GLM53_BI_ROUTER", "GLM53_BI_INDEXER", "GLM53_BI_DENSE"))
+ from dataclasses import dataclass
+ from typing import TYPE_CHECKING, Any, ClassVar, cast
+ 
+@@ -973,6 +976,11 @@
+     dcp_padded_total_tokens: int = 0
+     dcp_ckv_gather_eligible: bool = False
+     ckv_prefetch_registry: _CKVPrefetchStateRegistry | None = None
++    # [ours] GLM53_BI_MLA: leading decode-phase rows/requests of a mixed step
++    bi_split_tokens: int = 0
++    bi_split_reqs: int = 0
++    # rows of requests past their prompt (leading block); -1 = unknown
++    bi_decode_tokens: int = -1
+ 
+     block_size: int = 64
+     topk_tokens: int = 2048
+@@ -1122,6 +1130,23 @@
+         ):
+             is_spec_decode = not bool(torch.any(cm.is_prefilling[: cm.num_reqs]))
+ 
++        # [ours] GLM53_BI_MLA: in a mixed step, the rows of requests that are past
++        # their prompt (decode/verify rows) form a leading block. Record it so the
++        # forward can run those rows on the decode kernel, exactly as in a
++        # decode-only step, instead of switching the whole step to extend.
++        bi_split_tokens = 0
++        bi_split_reqs = 0
++        bi_decode_tokens = -1
++        if _BI_MLA:
++            # [ours] role from the model runner's host-side is_prefilling (the
++            # old .cpu() here synced every step and cost ~2 ms of decode).
++            from vllm.model_executor.layers.quantization import exl3 as _bi_exl3
++
++            _r = _bi_exl3._BI_RUNNER
++            if _r["all_decode"] is False and _r["d"] > 0 and _r["reqs"] > 0:
++                bi_split_tokens = _r["d"]
++                bi_split_reqs = _r["reqs"]
++
+         use_dcp = self.dcp_world_size > 1
+         seq_lens_for_req = (
+             cm.dcp_local_seq_lens
+@@ -1357,6 +1382,9 @@
+             ckv_prefetch_registry=self.ckv_prefetch_registry,
+             block_size=self.kv_cache_spec.block_size,
+             topk_tokens=self.topk_tokens,
++            bi_split_tokens=bi_split_tokens,
++            bi_split_reqs=bi_split_reqs,
++            bi_decode_tokens=bi_decode_tokens,
+         )
+ 
+ 
+@@ -2655,7 +2683,24 @@
          slots = owner * int(padded_tokens) + rank_start + local_pos
  
          k_scale = getattr(layer, "_k_scale", None)
@@ -26,3 +82,64 @@
              if self._nvfp4_dynamic_scale:
                  self._concat_and_cache_nvfp4_mla_fp8_rope(
                      kv_c,
+@@ -3141,6 +3186,60 @@
+             and num_actual_toks <= attn_metadata.num_reqs * self.spec_decode_max_q
+             and num_actual_toks <= self._decode_max_rows
+         )
++        bi_d = int(attn_metadata.bi_split_tokens)
++        if (
++            bi_d > 0
++            and not use_decode_kernel
++            and not use_ckv_gather
++            and not self.need_to_return_lse_for_decode
++            and bi_d < num_actual_toks
++            and bi_d <= self._decode_max_rows
++        ):
++            # [ours] GLM53_BI_MLA: decode rows on the decode kernel (same kernel and
++            # split count as a decode-only step), prefill rows on extend.
++            bi_r = int(attn_metadata.bi_split_reqs)
++            if self._pad_heads:
++                bi_q = q_buffer[:, : self._kernel_num_heads]
++                bi_q[:, self._input_num_heads :, :].zero_()
++            else:
++                bi_q = q_all
++            d_binding = self._decode_plan.bind(
++                scratch=scratch_storage,
++                q=bi_q[:bi_d],
++                selected_indices=selected_indices[:bi_d],
++                cache_seqlens_int32=attn_metadata.cache_seq_lens_per_token[:bi_d],
++                nsa_cache_seqlens_int32=nsa_cache_seqlens[:bi_d],
++            )
++            out_d = cast(
++                torch.Tensor,
++                self._sparse_mla_decode_forward(
++                    binding=d_binding,
++                    kv_cache=kv_cache,
++                    sm_scale=self.scale,
++                    v_head_dim=self.kv_lora_rank,
++                    forced_num_splits=self._num_splits_cap,
++                    **kernel_format_kwargs,
++                ),
++            )
++            out_d = out_d[:, : self._input_num_heads].clone()
++            e_binding = self._extend_plan.bind(
++                scratch=scratch_storage,
++                q=bi_q[bi_d:],
++                selected_indices=selected_indices[bi_d:],
++                cache_seqlens_int32=attn_metadata.cache_seq_lens_per_req[bi_r:],
++                nsa_cache_seqlens_int32=nsa_cache_seqlens[bi_d:],
++            )
++            out_e = cast(
++                torch.Tensor,
++                self._sparse_mla_extend_forward(
++                    binding=e_binding,
++                    kv_cache=kv_cache,
++                    sm_scale=self.scale,
++                    v_head_dim=self.kv_lora_rank,
++                    **kernel_format_kwargs,
++                ),
++            )
++            return torch.cat([out_d, out_e[:, : self._input_num_heads]]), None
+         if use_decode_kernel:
+             cache_seqlens = (
+                 attn_metadata.cache_seq_lens_per_req

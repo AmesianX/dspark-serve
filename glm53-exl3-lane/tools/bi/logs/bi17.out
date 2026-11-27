@@ -1,0 +1,36 @@
+   Maximum concurrency for 524,288 tokens per request: 2.42x
+{"phase": "warm", "X": ""}
+{"phase": "alone", "X": "# 전체 구조 요약 (5줄)\n\n1. **Scheduler (v1/core/sched/scheduler.py)**: vLLM V1 엔진의 핵심 스케줄러로, `schedule()`에서 running/waiting 큐의 "}
+{"phase": "mix", "X": "# 전체 구조 요약 (5줄)\n\n1. **Scheduler (v1/core/sched/scheduler.py)**: vLLM V1 엔진의 핵심 스케줄러로, `schedule()`에서 running/waiting 큐의 "}
+rows identical through final norm: 58 / 90
+first divergence at (0, '1b_d_recurrent') rows 1
+first divergence at (3, '2_attn_out') rows 4
+first divergence at (4, '1b_d_recurrent') rows 27
+148962 None
+148963 None
+148964 None
+148965 None
+148966 None
+148967 None
+148968 None
+148969 None
+pos 149008 first@(3, '2_attn_out') maxdiff 8.79e-03 alone: file12 rows_in_fwd=5 occ=1 | batch: file13 rows_in_fwd=5 occ=1
+pos 149009 first@(4, '1b_d_recurrent') maxdiff 3.81e-06 alone: file12 rows_in_fwd=5 occ=1 | batch: file13 rows_in_fwd=5 occ=1
+pos 149010 first@(4, '1b_d_recurrent') maxdiff 1.91e-06 alone: file13 rows_in_fwd=5 occ=1 | batch: file14 rows_in_fwd=5 occ=1
+pos 149010 first@(4, '1b_d_recurrent') maxdiff 3.81e-06 alone: file12 rows_in_fwd=5 occ=1 | batch: file13 rows_in_fwd=5 occ=1
+pos 149011 first@(3, '2_attn_out') maxdiff 1.17e-02 alone: file12 rows_in_fwd=5 occ=1 | batch: file13 rows_in_fwd=5 occ=1
+pos 149011 first@(4, '1b_d_recurrent') maxdiff 3.81e-06 alone: file13 rows_in_fwd=5 occ=1 | batch: file14 rows_in_fwd=5 occ=1
+pos 149011 first@(4, '1b_d_recurrent') maxdiff 9.54e-06 alone: file14 rows_in_fwd=5 occ=1 | batch: file15 rows_in_fwd=5 occ=1
+pos 149012 first@(4, '1b_d_recurrent') maxdiff 1.91e-06 alone: file13 rows_in_fwd=5 occ=1 | batch: file14 rows_in_fwd=5 occ=1
+pos 149012 first@(4, '1b_d_recurrent') maxdiff 6.10e-05 alone: file14 rows_in_fwd=5 occ=1 | batch: file15 rows_in_fwd=5 occ=1
+pos 149012 first@(4, '1b_d_recurrent') maxdiff 5.72e-06 alone: file12 rows_in_fwd=5 occ=1 | batch: file13 rows_in_fwd=5 occ=1
+pos 149013 first@(4, '1b_d_recurrent') maxdiff 3.81e-06 alone: file14 rows_in_fwd=5 occ=1 | batch: file15 rows_in_fwd=5 occ=1
+pos 149013 first@(4, '1b_d_recurrent') maxdiff 3.81e-06 alone: file13 rows_in_fwd=5 occ=1 | batch: file14 rows_in_fwd=5 occ=1
+pos 149014 first@(4, '1b_d_recurrent') maxdiff 7.63e-06 alone: file15 rows_in_fwd=5 occ=1 | batch: file16 rows_in_fwd=5 occ=1
+pos 149014 first@(4, '1b_d_recurrent') maxdiff 3.81e-06 alone: file14 rows_in_fwd=5 occ=1 | batch: file15 rows_in_fwd=5 occ=1
+pos 149015 first@(4, '1b_d_recurrent') maxdiff 7.63e-06 alone: file15 rows_in_fwd=5 occ=1 | batch: file16 rows_in_fwd=5 occ=1
+pos 149015 first@(4, '1b_d_recurrent') maxdiff 3.81e-06 alone: file14 rows_in_fwd=5 occ=1 | batch: file15 rows_in_fwd=5 occ=1
+pos 149015 first@(4, '1b_d_recurrent') maxdiff 3.81e-06 alone: file16 rows_in_fwd=5 occ=1 | batch: file17 rows_in_fwd=5 occ=1
+pos 149016 first@(4, '1b_d_recurrent') maxdiff 3.81e-06 alone: file15 rows_in_fwd=5 occ=1 | batch: file16 rows_in_fwd=5 occ=1
+pos 149016 first@(4, '1b_d_recurrent') maxdiff 3.81e-06 alone: file16 rows_in_fwd=5 occ=1 | batch: file17 rows_in_fwd=5 occ=1
+pos 149017 first@(4, '1b_d_recurrent') maxdiff 3.81e-06 alone: file17 rows_in_fwd=5 occ=1 | batch: file18 rows_in_fwd=5 occ=1

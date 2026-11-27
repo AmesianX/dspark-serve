@@ -1,0 +1,14 @@
+   Maximum concurrency for 524,288 tokens per request: 2.42x
+{"phase": "warm", "X": ""}
+{"phase": "alone", "X": "# 전체 구조 요약 (5줄)\n\n1. **Scheduler (v1/core/sched/scheduler.py)**: vLLM V1 엔진의 핵심 스케줄러로, `schedule()`에서 running/waiting 큐의 "}
+{"phase": "mix", "X": "# 전체 구조 요약 (5줄)\n\n1. **Scheduler (v1/core/sched/scheduler.py)**: vLLM V1 엔진의 핵심 스케줄러로, `schedule()`에서 running/waiting 큐의 "}
+rows alone 95 batch 98 common (pos,tok) 93
+rows identical through final norm: 93 / 93
+148962 None
+148963 None
+148964 None
+148965 None
+148966 None
+148967 None
+148968 None
+148969 None

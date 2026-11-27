@@ -1,0 +1,45 @@
+   Maximum concurrency for 524,288 tokens per request: 2.42x
+/cache/bist
+{"phase": "warm4", "X": ""}
+{"phase": "alone", "X": "# 전체 구조 요약 (5줄)\n\n1. **Scheduler (v1/core/sched/scheduler.py)**: vLLM V1 엔진의 핵심 스케줄러로, `schedule()`에서 running/waiting 큐의 "}
+{"phase": "co", "X": "# 전체 구조 요약 (5줄)\n\n1. **scheduler.py**는 vLLM V1 엔진의 핵심 스케줄러로, `schedule()`에서 running/waiting 큐의 요청들에 토큰 예"}
+L00_q989.pt equal has_init True True
+L01_q989.pt equal has_init True True
+L02_q989.pt equal has_init True True
+L04_q989.pt equal has_init True True
+L05_q989.pt equal has_init True True
+L06_q989.pt equal has_init True True
+L08_q989.pt equal has_init True True
+L09_q989.pt equal has_init True True
+L10_q989.pt equal has_init True True
+L12_q989.pt equal has_init True True
+L13_q989.pt equal has_init True True
+L14_q989.pt equal has_init True True
+L16_q989.pt equal has_init True True
+L17_q989.pt equal has_init True True
+L18_q989.pt equal has_init True True
+L20_q989.pt equal has_init True True
+L21_q989.pt equal has_init True True
+L22_q989.pt equal has_init True True
+L24_q989.pt equal has_init True True
+L25_q989.pt equal has_init True True
+L26_q989.pt equal has_init True True
+L28_q989.pt equal has_init True True
+L29_q989.pt equal has_init True True
+L30_q989.pt equal has_init True True
+L32_q989.pt equal has_init True True
+L33_q989.pt equal has_init True True
+L34_q989.pt equal has_init True True
+L36_q989.pt equal has_init True True
+L37_q989.pt equal has_init True True
+L38_q989.pt equal has_init True True
+L40_q989.pt equal has_init True True
+L41_q989.pt equal has_init True True
+L42_q989.pt equal has_init True True
+L44_q989.pt equal has_init True True
+[BI-DBG] step qlens=[994] seq_lens=[148962] prefilling=[True] d=0
+[BI-DBG] step qlens=[5120] seq_lens=[147968] prefilling=[True] d=0
+[BI-DBG] step qlens=[989] seq_lens=[148957] prefilling=[True] d=0
+[BI-DBG] step qlens=[989] seq_lens=[148957] prefilling=[True] d=0
+[BI-DBG] step qlens=[994] seq_lens=[148962] prefilling=[True] d=0
+[BI-DBG] step qlens=[5, 987, 989, 994] seq_lens=[148972, 148955, 148957, 148962] prefilling=[False, True, True, True] d=5

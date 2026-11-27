@@ -1,0 +1,19 @@
+   Maximum concurrency for 524,288 tokens per request: 2.42x
+{"phase": "warm", "X": ""}
+{"phase": "alone", "X": "# 전체 구조 요약 (5줄)\n\n1. **Scheduler (v1/core/sched/scheduler.py)**: vLL"}
+{"phase": "batch", "X": "# 전체 구조 요약 (5줄)\n\n1. **Scheduler (v1/core/sched/scheduler.py)**: vLL"}
+rows alone 102 batch 103 common (pos,tok) 95
+rows identical through final norm: 0 / 95
+first divergence at (0, '1b_a_in_proj') rows 3
+first divergence at (0, '1b_b_f_b_proj') rows 1
+first divergence at (0, '1b_d_recurrent') rows 71
+first divergence at (0, '1b_f_o_proj') rows 1
+first divergence at (1, '1b_d_recurrent') rows 19
+148900 ((1, '1b_d_recurrent'), 3.814697265625e-06)
+148901 ((1, '1b_d_recurrent'), 3.814697265625e-06)
+148902 ((1, '1b_d_recurrent'), 5.7220458984375e-06)
+148903 ((1, '1b_d_recurrent'), 7.62939453125e-06)
+148904 ((1, '1b_d_recurrent'), 3.814697265625e-06)
+148905 ((1, '1b_d_recurrent'), 7.62939453125e-06)
+148906 ((1, '1b_d_recurrent'), 3.0517578125e-05)
+148907 ((1, '1b_d_recurrent'), 7.62939453125e-06)

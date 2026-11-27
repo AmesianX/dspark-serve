@@ -36,13 +36,24 @@ edit at TP=2 and went unnoticed for eleven days (see the note in `apply`).
 
 Env:
     GLM53_AB_LORA   path to the adapter directory (unset = feature off)
-    GLM53_AB_SCALE  initial scale, default 0.0. Also the default applied to
-                    requests that do not carry their own ``ab_scale``, which
-                    is what `/ab` keeps writing.
+    GLM53_AB_SCALE  default 0.0: the scale of every request that does not carry
+                    its own ``ab_scale``. Fixed at startup -- nothing reachable
+                    at runtime (HTTP or worker RPC) can change it.
+
+Zero trust (2026-11-27). The only way to get the edit is to ask for it on your
+own request, ``{"vllm_xargs": {"ab_scale": 1}}``, and that changes only your
+request's tokens. There used to be a second way, ``POST /ab``, which wrote the
+engine-wide default: every request that did not carry its own scale followed
+it, so one client flipping it changed every other client's model (measured on
+the live lane: a plain request's text and logprobs changed after another client
+posted ``{"scale":1}``). Clients are not trusted -- the code is MIT-licensed
+and anyone can send anything -- so the server no longer offers that knob;
+``POST /ab`` is refused and the worker RPC that set it is gone.
 """
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import threading
@@ -97,6 +108,7 @@ _scale_stage: torch.Tensor | None = None
 _default_scale: float = float(os.getenv("GLM53_AB_SCALE", "0") or 0.0)
 _req_scales: dict[str, float] = {}
 _fills: int = 0
+_rejected: int = 0
 
 
 def enabled() -> bool:
@@ -143,7 +155,11 @@ def get_scale() -> float:
 
 
 def set_scale(value: float) -> float:
-    """Flip the edit on (1.0) or off (0.0). Safe to call between forwards.
+    """Set the engine-wide default. In-process only: startup and tests.
+
+    Deliberately NOT reachable from outside -- no HTTP route and no worker RPC
+    calls this (see the zero-trust note at the top). Exposing it is what let
+    one client change every other client's model.
 
     Written in place so any CUDA graph that captured the tensor sees the new
     value without being re-captured.
@@ -212,30 +228,40 @@ def reserve(max_tokens: int, device: torch.device) -> None:
 
 
 def note_request(req_id: str, sampling_params) -> None:
-    """Record a request's own scale, sent as ``extra_body {"ab_scale": 0|1}``.
+    """Record a request's own scale, sent as ``{"vllm_xargs": {"ab_scale": 0|1}}``.
 
-    Absent or unparseable leaves the request on the global knob, so an older
-    client that knows nothing about this keeps working unchanged.
+    The value comes from a client and is not trusted. Only a real number
+    (int or float, not bool), finite, in [0, 1] is accepted; anything else is
+    ignored and the request runs on the default -- the original weights. It
+    used to be clamped with ``min(max(v, 0), 1)``, which passes NaN through
+    unchanged (both comparisons are false), so ``"ab_scale": "nan"`` stored a
+    NaN that went into the forward pass and also broke ``GET /ab``'s JSON while
+    the request was tracked. Out-of-range values are refused rather than
+    clamped for the same reason: a client that sends 7.5 is not asking for 1.
+
+    Absent leaves the request on the default, so a client that knows nothing
+    about this keeps working unchanged.
     """
+    global _rejected
     if not enabled():
         return
     extra = getattr(sampling_params, "extra_args", None) or {}
+    if "ab_scale" not in extra:
+        _req_scales.pop(req_id, None)
+        return
     raw = extra.get("ab_scale")
-    if raw is None:
+    ok = (
+        isinstance(raw, (int, float))
+        and not isinstance(raw, bool)
+        and math.isfinite(raw)
+        and 0.0 <= float(raw) <= 1.0
+    )
+    if not ok:
+        _rejected += 1
         _req_scales.pop(req_id, None)
+        logger.warning("[ab] req %s: ab_scale=%r 거부 — 유한한 0~1 숫자만. 원본으로 돈다", req_id, raw)
         return
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        logger.warning("[ab] req %s: ab_scale=%r 숫자가 아님 — 전역값 사용", req_id, raw)
-        _req_scales.pop(req_id, None)
-        return
-    clamped = min(max(value, 0.0), 1.0)
-    if clamped != value:
-        # The adapter is linear, so values outside [0, 1] extrapolate the edit
-        # instead of interpolating it. Refuse quietly rather than amplify.
-        logger.warning("[ab] req %s: ab_scale %g → %g 로 제한", req_id, value, clamped)
-    _req_scales[req_id] = clamped
+    _req_scales[req_id] = float(raw)
 
 
 def forget_request(req_id: str) -> None:
@@ -305,6 +331,12 @@ def info() -> dict:
         "fills": _fills,
         "tracked_requests": len(_req_scales),
         "overrides": sorted(set(_req_scales.values())),
+        # Requests whose ab_scale was refused (non-finite, out of range, not a
+        # number) and ran on the default instead.
+        "rejected": _rejected,
+        # The default cannot be changed at runtime; say so, so a client that
+        # still tries `POST /ab` can see why it got refused.
+        "global_write": False,
     }
 
 

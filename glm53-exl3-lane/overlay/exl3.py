@@ -417,6 +417,188 @@ def _get_triton_unpack():
     return _TRITON_UNPACK
 
 
+_BI_DENSE_PREFILL = os.environ.get("GLM53_BI_DENSE_PREFILL", "0") == "1"
+_BI_DENSE_MARLIN16 = os.environ.get("GLM53_BI_DENSE_MARLIN16", "0") == "1"
+_BI_MOE = os.environ.get("GLM53_BI_MOE", "0") == "1"
+_BI_DENSE = os.environ.get("GLM53_BI_DENSE", "0") == "1"
+# [ours] GLM53_BI_MOE: (decode-row count, forward row count) of the current target
+# forward, set by the model forward. -1 = unknown -> no split.
+_BI_ROLE = {"d": -1, "m": -1}
+
+
+_BI_DBG = {"n": 0}
+
+
+def _bi_dbg(msg: str) -> None:
+    if _BI_DBG["n"] < 120 and os.environ.get("GLM53_BI_DEBUG", "0") == "1":
+        _BI_DBG["n"] += 1
+        print(f"[BI-DBG] {msg}", flush=True)
+
+
+_BI_LIN_KERNEL = None
+
+
+def _bi_lin_kernel():
+    global _BI_LIN_KERNEL
+    if _BI_LIN_KERNEL is None:
+        import triton
+        import triton.language as tl
+
+        @triton.jit
+        def _k(x_ptr, w_ptr, y_ptr, M, N, K, sxm, sxk, swn, swk, sym, syn,
+               BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
+               PREC: tl.constexpr):
+            pid_m = tl.program_id(0)
+            pid_n = tl.program_id(1)
+            rm = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+            rn = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+            rk = tl.arange(0, BLOCK_K)
+            acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+            for k0 in range(0, K, BLOCK_K):
+                kk = k0 + rk
+                a = tl.load(x_ptr + rm[:, None] * sxm + kk[None, :] * sxk,
+                            mask=(rm[:, None] < M) & (kk[None, :] < K), other=0.0)
+                b = tl.load(w_ptr + rn[None, :] * swn + kk[:, None] * swk,
+                            mask=(rn[None, :] < N) & (kk[:, None] < K), other=0.0)
+                acc += tl.dot(a, b, input_precision=PREC)
+            tl.store(y_ptr + rm[:, None] * sym + rn[None, :] * syn,
+                     acc.to(y_ptr.dtype.element_ty), mask=(rm[:, None] < M) & (rn[None, :] < N))
+
+        _BI_LIN_KERNEL = (_k, triton)
+    return _BI_LIN_KERNEL
+
+
+def bi_linear(x: torch.Tensor, w: torch.Tensor, out_dtype=None) -> torch.Tensor:
+    """[ours] y = x @ w.T, launch config fixed by dtype only (never by M): each
+    program owns 16 rows x (64|32) cols and walks all of K in fixed steps, no
+    split-K -> a row's bits do not depend on M or on its position. Measured
+    M-/position-invariant where cuBLAS in the server process was not (bi29).
+    fp32 inputs use tf32x3 (~fp32 accuracy)."""
+    k, triton = _bi_lin_kernel()
+    M, K = x.shape
+    N = w.shape[0]
+    y = torch.empty((M, N), dtype=out_dtype or x.dtype, device=x.device)
+    if M == 0:
+        return y
+    if x.dtype == torch.float32:
+        BM, BN, BK, prec = 16, 32, 64, "tf32x3"
+    else:
+        BM, BN, BK, prec = 16, 64, 256, "tf32"
+    k[(triton.cdiv(M, BM), triton.cdiv(N, BN))](
+        x, w, y, M, N, K, x.stride(0), x.stride(1), w.stride(0), w.stride(1),
+        y.stride(0), y.stride(1), BLOCK_M=BM, BLOCK_N=BN, BLOCK_K=BK, PREC=prec,
+        num_warps=4, num_stages=3)
+    return y
+
+
+_BI_ROWDOT = None
+
+
+def bi_rowdot_fp32(x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+    """[ours] y[m, n] = sum_k float(x[m, k]) * w[n, k], one program per (row, col),
+    fixed K blocking -> M-/position-invariant. For tiny N (indexer head weights,
+    N=16) at decode M this is ~10 us vs ~37 us for cast + cuBLAS fp32."""
+    global _BI_ROWDOT
+    if _BI_ROWDOT is None:
+        import triton
+        import triton.language as tl
+
+        @triton.jit
+        def _k(x_ptr, w_ptr, y_ptr, K, sxm, swn, sym, BLOCK_K: tl.constexpr):
+            m = tl.program_id(0)
+            n = tl.program_id(1)
+            rk = tl.arange(0, BLOCK_K)
+            acc = tl.zeros((BLOCK_K,), dtype=tl.float32)
+            for k0 in range(0, K, BLOCK_K):
+                kk = k0 + rk
+                msk = kk < K
+                a = tl.load(x_ptr + m * sxm + kk, mask=msk, other=0.0).to(tl.float32)
+                b = tl.load(w_ptr + n * swn + kk, mask=msk, other=0.0)
+                acc += a * b
+            tl.store(y_ptr + m * sym + n, tl.sum(acc, axis=0))
+
+        _BI_ROWDOT = _k
+    M, K = x.shape
+    N = w.shape[0]
+    y = torch.empty((M, N), dtype=torch.float32, device=x.device)
+    if M:
+        _BI_ROWDOT[(M, N)](x, w, y, K, x.stride(0), w.stride(0), y.stride(0), BLOCK_K=1024, num_warps=4)
+    return y
+
+
+def bi_head_weights(x: torch.Tensor, w_fp32: torch.Tensor):
+    """[ours] indexer fp32 head weights by role: decode rows -> rowdot (bf16 in,
+    fp32 math), prefill rows -> bi_linear tf32x3. None if the role is unknown."""
+    d, m = _BI_ROLE["d"], _BI_ROLE["m"]
+    if x.dim() != 2 or m != x.shape[0] or d < 0:
+        return None
+    if d == m:
+        return bi_rowdot_fp32(x, w_fp32)
+    parts = []
+    if d > 0:
+        parts.append(bi_rowdot_fp32(x[:d], w_fp32))
+    parts.append(bi_linear(x[d:].float(), w_fp32))
+    return torch.cat(parts) if len(parts) > 1 else parts[0]
+
+
+def bi_gemm_role(x: torch.Tensor, w: torch.Tensor, out_dtype=None):
+    """[ours] batch-invariant x @ w.T by row role: decode rows -> bi_linear
+    (cheap at small M), prefill rows -> vLLM batch_invariant persistent matmul
+    (fast at large M; fp32 stays on bi_linear). None if the role is unknown."""
+    d, m = _BI_ROLE["d"], _BI_ROLE["m"]
+    if x.dim() != 2 or m != x.shape[0] or d < 0:
+        return None
+    if x.dtype == torch.float32 or d == m:
+        return bi_linear(x, w, out_dtype)
+    from vllm.model_executor.layers.batch_invariant import matmul_persistent
+
+    parts = []
+    if d > 0:
+        parts.append(bi_linear(x[:d], w, out_dtype))
+    yp = matmul_persistent(x[d:], w.t())
+    parts.append(yp if out_dtype is None or yp.dtype == out_dtype else yp.to(out_dtype))
+    return torch.cat(parts) if len(parts) > 1 else parts[0]
+
+
+def bi_fixed_rows(x: torch.Tensor, fn, dec_rows: int = 16, pre_rows: int = 1024):
+    """[ours] Batch-invariant wrapper for a cuBLAS GEMM whose per-row result depends
+    on M. Decode rows run in calls of exactly ``dec_rows`` rows, prefill rows in
+    calls of exactly ``pre_rows`` rows (last call zero-padded), so every row is
+    computed by a call of a fixed shape. Needs the step role (bi_set_role);
+    returns None when it is unknown so the caller can fall back."""
+    d, m = _BI_ROLE["d"], _BI_ROLE["m"]
+    if x.dim() != 2 or m != x.shape[0] or d < 0:
+        return None
+    outs = []
+    for lo, hi, step in ((0, d, dec_rows), (d, m, pre_rows)):
+        for s0 in range(lo, hi, step):
+            s1 = min(hi, s0 + step)
+            c = x[s0:s1]
+            if s1 - s0 < step:
+                c = torch.cat([c, c.new_zeros(step - (s1 - s0), c.shape[1])])
+            outs.append(fn(c)[: s1 - s0])
+    return torch.cat(outs) if len(outs) > 1 else outs[0]
+
+
+_BI_RUNNER = {"all_decode": None, "d": -1, "reqs": -1}
+
+
+def bi_set_runner(all_decode: bool, d: int, reqs: int = -1) -> None:
+    """[ours] set by the model runner from host-side is_prefilling (no sync)."""
+    _BI_RUNNER["all_decode"] = all_decode
+    _BI_RUNNER["d"] = int(d)
+    _BI_RUNNER["reqs"] = int(reqs)
+    if not all_decode:
+        _bi_dbg(f"runner all_decode={all_decode} d={d} reqs={reqs}")
+
+
+def bi_set_role(decode_rows: int, total_rows: int) -> None:
+    _BI_ROLE["d"] = int(decode_rows)
+    _BI_ROLE["m"] = int(total_rows)
+    if total_rows != 9236 and (0 < decode_rows < total_rows or total_rows > 1000) and not torch.cuda.is_current_stream_capturing():
+        _bi_dbg(f"set_role d={decode_rows} m={total_rows}")
+
+
 def marlin_fp8_dequant_bf16_triton(layer) -> torch.Tensor:
     """Triton 한 패스: Marlin 패킹 FP8 → BF16 [N, K]. 스케일은 [K/128, PN] 역순열본을 층에 캐시(수 MB)."""
     from vllm.model_executor.layers.quantization.utils.marlin_utils import marlin_repacked_nk
@@ -1001,10 +1183,51 @@ class Exl3Config(QuantizationConfig):
                                         layer._prefill_nk = (int(layer.weight.shape[0]), int(layer.weight.shape[1]))
                                     super().process_weights_after_loading(layer)
 
+                                def _bi_apply(self, layer, x, bias):
+                                    # [ours] GLM53_BI_DENSE: batch-invariant dense by row role.
+                                    # Marlin rows are M-invariant only for calls of <=16 rows, so
+                                    # decode rows go in <=16-row calls (a decode-only step of <=16
+                                    # rows is the unchanged single call); prefill rows go to the
+                                    # fixed-tile persistent matmul on the dequantized BF16 weight.
+                                    m = x.shape[0]
+                                    mk = lambda c: super(_Fp8BlockOnlineMarlin, self).apply(layer, c, bias)
+                                    d, rm = _BI_ROLE["d"], _BI_ROLE["m"]
+                                    if self._bi_is_lm_head or rm != m or d < 0:
+                                        # lm_head (sampled rows only) / draft / unknown role: all rows
+                                        # are decode-like; keep calls <= 16 rows.
+                                        if m <= 16 or torch.cuda.is_current_stream_capturing():
+                                            return None
+                                        return torch.cat([mk(x[i:i + 16]) for i in range(0, m, 16)])
+                                    outs = [mk(x[i:min(d, i + 16)]) for i in range(0, d, 16)]
+                                    if d < m:
+                                        from vllm.model_executor.layers.batch_invariant import matmul_persistent
+                                        w = marlin_fp8_dequant_bf16_triton(layer)
+                                        yp = matmul_persistent(x[d:], w.t())
+                                        if bias is not None:
+                                            yp = yp + bias
+                                        outs.append(yp)
+                                    return torch.cat(outs) if len(outs) > 1 else outs[0]
+
                                 def apply(self, layer, x, bias=None):
+                                    if _BI_DENSE and x.dim() == 2:
+                                        y = self._bi_apply(layer, x, bias)
+                                        if y is not None:
+                                            return y
+                                    if _BI_DENSE_MARLIN16 and x.shape[0] > 16:
+                                        # [ours] 진단 전용: Marlin 은 M<=16 호출에서 행별 결과가 M 과 무관.
+                                        # 모든 행을 16행 단위로 → dense 완전 배치불변(프리필 느림).
+                                        return torch.cat([super(_Fp8BlockOnlineMarlin, self).apply(layer, x[i:i + 16], bias)
+                                                          for i in range(0, x.shape[0], 16)])
                                     # [ours] 프리필(M 큼)은 BF16 cuBLAS, 디코드(M 작음)는 Marlin
                                     if self.prefill_bf16_min_m > 0 and x.shape[0] > self.prefill_bf16_min_m:
                                         w = marlin_fp8_dequant_bf16_triton(layer)
+                                        if _BI_DENSE_PREFILL and bias is None:
+                                            # [ours] GLM53_BI_DENSE_PREFILL: fixed-tile, no split-K
+                                            # persistent matmul — a row's result does not depend on M.
+                                            from vllm.model_executor.layers.batch_invariant import (
+                                                matmul_persistent,
+                                            )
+                                            return matmul_persistent(x, w.t())
                                         return torch.nn.functional.linear(x, w, bias)
                                     return super().apply(layer, x, bias)
 
@@ -1022,6 +1245,7 @@ class Exl3Config(QuantizationConfig):
                                 else ""
                             )
                             _m.subset_draft_prefix = prefix
+                            _m._bi_is_lm_head = bool(is_lm_head)
                             _m.prefill_bf16_min_m = (
                                 int(os.environ.get("VLLM_EXL3_PREFILL_BF16_MIN_M", "64"))
                                 if os.environ.get("VLLM_EXL3_PREFILL_BF16", "0") == "1" and not is_lm_head
@@ -2691,6 +2915,8 @@ class Exl3MoEMethod(FusedMoEMethodBase):
         topk_weights: torch.Tensor,
         topk_ids: torch.Tensor,
     ) -> torch.Tensor:
+        if _BI_MOE and 32 < int(x.shape[0]) != 9236 and _BI_ROLE["d"] != 0:
+            _bi_dbg(f"moe m={int(x.shape[0])} role={_BI_ROLE} mixed={getattr(layer, 'exl3_mixed_bitrate', False)}")
         if getattr(layer, "exl3_mixed_bitrate", False):
             return self._apply_mixed_rank_sliced(
                 layer,
@@ -2700,6 +2926,40 @@ class Exl3MoEMethod(FusedMoEMethodBase):
             )
         runtime = self._rank_sliced_runtime(layer, x, topk_ids)
         m = int(x.shape[0])
+        if (
+            _BI_MOE
+            and _BI_ROLE["m"] == m
+            and 0 <= _BI_ROLE["d"] < m
+            and runtime["prefill_plan"] is not None
+            and not torch.cuda.is_current_stream_capturing()
+        ):
+            # [ours] GLM53_BI_MOE: the step has prefill rows. Decode rows always on the
+            # Trellis plan in <= max_trellis_m chunks (as in a decode-only step);
+            # prefill rows always on the prefill plan, whatever their count.
+            d = _BI_ROLE["d"]
+            step = int(runtime["max_trellis_m"])
+            parts = []
+            for s0 in range(0, d, step):
+                s1 = min(d, s0 + step)
+                b = runtime["api"].bind(
+                    runtime["trellis_plan"],
+                    scratch=runtime["trellis_scratch"],
+                    a=x[s0:s1],
+                    experts=layer.exl3_trellis_weights,
+                    topk_weights=topk_weights[s0:s1],
+                    topk_ids=topk_ids[s0:s1],
+                )
+                parts.append(runtime["api"].run(binding=b).to(x.dtype).clone())
+            b = runtime["api"].bind(
+                runtime["prefill_plan"],
+                scratch=runtime["prefill_scratch"],
+                a=x[d:],
+                experts=layer.exl3_trellis_weights,
+                topk_weights=topk_weights[d:],
+                topk_ids=topk_ids[d:],
+            )
+            parts.append(runtime["api"].run(binding=b).to(x.dtype))
+            return torch.cat(parts) if len(parts) > 1 else parts[0]
         if runtime["min_trellis_m"] <= m <= runtime["max_trellis_m"]:
             binding = runtime["api"].bind(
                 runtime["trellis_plan"],

@@ -1,5 +1,5 @@
---- sparse_attn_indexer_kpool.py.orig	2026-09-29 02:06:19.963470682 +0900
-+++ sparse_attn_indexer_kpool.py	2026-09-30 04:21:47.706261089 +0900
+--- overlay/sparse_attn_indexer_kpool.py.orig	2026-11-26 16:43:58.481132655 +0900
++++ overlay/sparse_attn_indexer_kpool.py	2026-11-27 04:20:47.836085861 +0900
 @@ -15,6 +15,7 @@
  from vllm.logger import init_logger
  from vllm.model_executor.custom_op import CustomOp
@@ -8,7 +8,20 @@
  
  if TYPE_CHECKING:
      from vllm.models.glm5next.nvidia.ops import kpool_compress as kpool_ops
-@@ -69,6 +70,120 @@
+@@ -48,6 +49,12 @@
+ _PERSISTENT_TOPK_OP = None
+ 
+ 
++import os as _bi_os
++_BI_DBG_POS = int(_bi_os.environ.get("GLM53_BI_DBG_POS", "-1") or -1)
++_BI_ZERO_GATHER = _bi_os.environ.get("GLM53_BI_ZERO_GATHER", "0") == "1"
++_BI_IDX_DUMP = _bi_os.environ.get("GLM53_BI_IDX_DUMP") or None
++_BI_IDX_N = [0]
++
+ def _persistent_topk_op():
+     """Resolve the decode top-k op, honoring the GLM53_TOPK_FIX_SO override.
+ 
+@@ -69,6 +76,120 @@
              _PERSISTENT_TOPK_OP = torch.ops._C.persistent_topk
      return _PERSISTENT_TOPK_OP
  
@@ -129,7 +142,63 @@
  # MXFP4 layout: 2 values packed per byte, ue8m0 (1-byte) scale per block of 32.
  MXFP4_BLOCK_SIZE = 32
  
-@@ -621,6 +736,14 @@
+@@ -532,6 +653,11 @@
+                         token_to_seq=chunk.token_to_seq,
+                     )
+                 else:
++                    if _BI_ZERO_GATHER:
++                        # [ours] diagnostic: expose gather holes (stale rows from the
++                        # previous chunk/layer would otherwise mask them)
++                        k_quant.zero_()
++                        k_scale.zero_()
+                     ops.cp_gather_indexer_k_quant_cache(
+                         kv_cache,
+                         k_quant,
+@@ -540,6 +666,18 @@
+                         chunk.cu_seq_lens,
+                     )
+ 
++            if _BI_DBG_POS >= 0 and positions is not None:
++                _pp = positions[chunk.token_start : chunk.token_end]
++                _hit = (_pp == _BI_DBG_POS).nonzero(as_tuple=True)[0]
++                if _hit.numel():
++                    _r = int(_hit[0])
++                    print(
++                        f"[BI-IDX] chunk tok[{chunk.token_start},{chunk.token_end}) reqs={chunk.num_reqs} "
++                        f"total_seq_lens={chunk.total_seq_lens} skip_gather={chunk.skip_kv_gather} "
++                        f"row={_r} ks={int(chunk.cu_seqlen_ks[_r])} ke={int(chunk.cu_seqlen_ke[_r])} "
++                        f"cu_seq_lens={chunk.cu_seq_lens.tolist()} n_dec_tok={num_decode_tokens}",
++                        flush=True,
++                    )
+             q_slice = q_quant[chunk.token_start : chunk.token_end]
+             q_scale_slice = (
+                 q_scale[chunk.token_start : chunk.token_end]
+@@ -581,6 +719,24 @@
+                     clean_logits=False,
+                 )
+             num_rows = logits.shape[0]
++            if _BI_IDX_DUMP and positions is not None:
++                _pp = positions[chunk.token_start : chunk.token_end]
++                _hit = (_pp == _BI_DBG_POS).nonzero(as_tuple=True)[0]
++                if _hit.numel():
++                    _r = int(_hit[0])
++                    _ks, _ke = int(chunk.cu_seqlen_ks[_r]), int(chunk.cu_seqlen_ke[_r])
++                    _bi_os.makedirs(_BI_IDX_DUMP, exist_ok=True)
++                    _BI_IDX_N[0] += 1
++                    torch.save(
++                        {
++                            "logits": logits[_r, _ks:_ke].float().cpu(),
++                            "q": q_slice[_r].view(torch.uint8).cpu(),
++                            "w": weights[chunk.token_start + _r].float().cpu(),
++                            "k": k_quant[:_ke].view(torch.uint8).cpu(),
++                            "ks": k_scale[:_ke].view(torch.uint8).cpu(),
++                        },
++                        _bi_os.path.join(_BI_IDX_DUMP, f"c{_BI_IDX_N[0]:04d}.pt"),
++                    )
+ 
+             # kpool: logits are pool-granular (compress_ratio == index_kpool),
+             # so topk selects pools. We pick topk_tokens // kpool pools then
+@@ -621,6 +777,14 @@
                      logits.stride(1),
                      select_k,
                  )
@@ -144,7 +213,7 @@
  
              if index_kpool > 1:
                  pool_ids = pool_topk.to(torch.int64)
-@@ -865,13 +988,29 @@
+@@ -865,13 +1029,29 @@
              (topk_workspace,) = workspace_manager.get_simultaneous(
                  ((RADIX_TOPK_WORKSPACE_SIZE,), torch.uint8),
              )

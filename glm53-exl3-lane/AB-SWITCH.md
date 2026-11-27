@@ -3,13 +3,35 @@
 원본(거부 능력 있음, `brandonmusic/GLM-5.3-Flash-tr3-4bpw`) 가중치를 서빙하면서, abliteration 편집을 **요청 단위로 켰다
 껐다** 한다. 재기동도 재프리필도 없다.
 
+켜는 방법은 **자기 요청에 싣는 것 하나뿐**이다. 그 요청의 토큰에만 걸린다.
+
 ```bash
-curl -X POST -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
-     -d '{"scale":1}' http://localhost:8000/ab     # 검열 해제 ON
-curl -X POST ... -d '{"scale":0}' http://localhost:8000/ab   # OFF(기본)
-curl -H "Authorization: Bearer $KEY" http://localhost:8000/ab # 현재 상태
-# → {"scale":0.0,"workers":[0.0,0.0],"consistent":true,"mode":"original"}
+# 이 요청만 검열 해제 (같은 배치의 다른 요청은 원본 그대로 — 비트 동일 실측)
+curl -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+     -d '{"model":"glm-5.3-flash","messages":[...],"vllm_xargs":{"ab_scale":1}}' \
+     http://localhost:8000/v1/chat/completions
+curl -H "Authorization: Bearer $KEY" http://localhost:8000/ab   # 상태(읽기 전용)
+# POST /ab → 410 Gone (아래 "제로 트러스트")
 ```
+
+## ⛔ 제로 트러스트 (2026-11-27)
+
+클라이언트는 믿지 않는다. codemason 은 MIT 공개라 누구든 무엇이든 보낼 수 있다.
+
+- **전역 스위치 없음.** 예전 `POST /ab` 는 엔진 전체 기본값을 바꿨고, `ab_scale` 을 안 실은
+  요청은 전부 그 값을 따랐다 → 한 클라이언트가 남의 모델을 바꿀 수 있었다. 11-20 토큰별
+  벡터는 "분리할 수단"만 만들고 이 쓰기 경로를 닫지 않았다. 11-27 라이브 실측: 다른
+  클라이언트의 `POST /ab {"scale":1}` 뒤에 아무것도 안 바꾼 요청의 텍스트·logprob 이 바뀜.
+  이제 `POST /ab` 는 **410**, 워커의 setter RPC 도 **설치하지 않는다**(`VLLM_SERVER_DEV_MODE`
+  의 `/collective_rpc` 로도 못 닿음). 기본값은 기동 시 `GLM53_AB_SCALE`(0) 고정.
+- **입력 검증.** `ab_scale` 은 유한한 0~1 숫자(int/float, bool 제외)만 받는다. 그 밖(NaN·inf·
+  범위 밖·문자열·bool·리스트)은 **무시하고 원본으로 돈다**(`GET /ab` 의 `rejected` 증가).
+  예전 `min(max(v,0),1)` 은 NaN 을 그대로 통과시켜 forward 에 NaN 이 들어갔고, 그 요청이
+  추적되는 동안 `GET /ab` 가 JSON 직렬화 오류로 500 이 났다.
+- 검증: `tools/test_ab_zero_trust.py`(고치기 전 코드에서 18건 실패 확인), `tools/test_ab_per_request.py`.
+- ⚠️ **남은 공유 지점 = 프리픽스 캐시.** 캐시 키에 scale 이 없어서, `ab_scale=1` 로 먼저
+  프리필된 접두부 KV 를 같은 접두부를 보낸 다른 요청이 재사용한다. 다중 사용자 분리는
+  게이트웨이의 테넌트별 `cache_salt` 로 한다(KV_OFFLOAD.md "격리").
 
 ## 왜 이 구조인가
 
@@ -48,7 +70,7 @@ abliteration 은 거부를 없애면서 **"없다"고 말하는 능력도 같이
 | `overlay/ab_switch.py` | 훅 본체. scale 은 GPU 텐서(그래프 재캡처 불필요) |
 | `overlay/mla.py` | sparse MLA 11층 훅 (`mla.py:405` 의 `o_proj` 출구) |
 | `overlay/glm5next/kda.py` | KDA 34층 훅 (`kda.py:344`) |
-| `overlay/ab_plugin/` | `/ab` 라우트 + 워커 전파(`collective_rpc`) |
+| `overlay/ab_plugin/` | `GET /ab`(읽기 전용) + 워커 조회(`collective_rpc`). `POST /ab` 는 410 |
 
 플러그인은 vLLM 공식 확장점을 쓴다. 서버 코드를 고치지 않는다. TP 라 스케일이 모든
 워커에 닿아야 해서 두 짝으로 나뉜다 — `vllm.general_plugins` 가 워커 RPC 를 설치하고
@@ -89,8 +111,11 @@ abliteration 은 거부를 없애면서 **"없다"고 말하는 능력도 같이
 
 ## 클라이언트 연동
 
-codemason `/ab off|on|auto`. `auto` = 사용자 턴에 켜고 **모델이 도구 호출을 시작하는 순간 끈다**.
-한 번 시키면 몇 시간 도구 루프를 도는 것이 정상이라, 사람이 턴을 못 받는 동안 켜져 있으면 안 된다.
+codemason `/ab off|on|auto` 는 **서버에 아무것도 쓰지 않는다**(11-27). 모드는 클라이언트가 들고 있고,
+대화 루프의 요청마다 `vllm_xargs.ab_scale` 을 싣는다 — `on`=1, `off`=0, `auto`=사용자 턴의 **첫 요청만 1**,
+그 뒤 요청은 전부 0(도구 호출·문장·빈 턴·중단 무엇으로 답하든). 압축·도우미 호출은 키를 안 실어 기본(원본).
+⛔ 예전 "도구 호출을 시작하는 순간 끈다"는 10-01 이전 설계이고 그게 버그였다(끄는 경로가 없는 턴이 켜진 채 방치).
+요청별이 되면서 "끄기"라는 동작 자체가 없어졌다 — 남는 상태가 없으니 켜진 채 남을 수도 없다.
 
 ## ROCm 레인(.109) 이식 메모
 

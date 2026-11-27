@@ -1,0 +1,16 @@
+--- config.py.orig	2026-11-26 17:06:28.900233591 +0900
++++ config.py	2026-11-26 17:06:36.506969865 +0900
+@@ -58,7 +58,12 @@
+     )
+ 
+     _, tokens_per_hash = resolve_kv_cache_block_sizes(kv_cache_config, vllm_config)
+-    for group in groups:
++    for group, kv_group in zip(groups, kv_cache_config.kv_cache_groups):
++        # [ours] glm53: a group that never takes part in prefix caching (the
++        # kpool indexer tail: a 1-block circular scratch, tokens_per_block=4) is
++        # excluded from offloading by the scheduler, so it need not align.
++        if not getattr(kv_group.kv_cache_spec, "participates_in_prefix_caching", True):
++            continue
+         assert group.tokens_per_block % tokens_per_hash == 0, (
+             f"tokens_per_block={group.tokens_per_block} not divisible by "
+             f"tokens_per_hash={tokens_per_hash}. "

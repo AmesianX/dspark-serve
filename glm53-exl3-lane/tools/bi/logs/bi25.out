@@ -1,0 +1,15 @@
+[SYNC]   헤드 == 워커(10.0.1.2) (666 files, exp/glm53-kv-offload@2eddaa3)
+   Maximum concurrency for 524,288 tokens per request: 2.42x
+/cache/bi
+{"phase": "warm4", "X": ""}
+{"phase": "alone", "X": "# 전체 구조 요약 (5줄)\n\n1. **Scheduler (v1"}
+{"phase": "co", "X": "# 전체 구조 요약 (5줄)\n\n1. **Scheduler (v1/core/sched/scheduler.py)**: vLLM V1 엔진의 핵심 스케줄러로, `schedule()`에서 running/waiting 큐의 "}
+[BI-DBG] step qlens=[989] seq_lens=[148957] prefilling=[True] d=0
+[BI-DBG] step qlens=[994] seq_lens=[148962] prefilling=[True] d=0
+[BI-DBG] step qlens=[987] seq_lens=[148955] prefilling=[True] d=0
+[BI-DBG] step qlens=[5, 989, 994, 994] seq_lens=[148965, 148957, 148962, 148962] prefilling=[False, True, True, True] d=5
+[WORKER] memwatch off
+rows alone 92 batch 386 common (pos,tok) 88
+rows identical through final norm: 0 / 88
+first divergence at (0, '1b_c3_init_state') rows 62
+first divergence at (0, '1b_d_recurrent') rows 26

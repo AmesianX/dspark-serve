@@ -1,0 +1,19 @@
+{"tag": "P450_cold", "prompt_tokens": 446746, "cached": null, "ttft_s": 357.83, "completion_tokens": 100, "decode_tps": 33.1, "slots": ["805 by group: {4: 112, 0: 469, 3: 112, 2: 112}", "805 by group: {4: 112, 0: 469, 3: 112, 2: 1
+{"tag": "mem_floor_cold", "mem_floor_gb": {"head": 6.28, "worker": 9.04}}
+   Maximum concurrency for 524,288 tokens per request: 2.42x
+] glm53-nvme: restored 805 offloaded chunks from disk
+{"tag": "P450_after_restart", "prompt_tokens": 446746, "cached": null, "ttft_s": 10.14, "completion_tokens": 100, "decode_tps": 32.9, "same_as_cold": true}
+{"tag": "sub0", "prompt_tokens": 133080, "ttft_s": 190.9, "decode_tps": 10.7}
+{"tag": "sub1", "prompt_tokens": 133079, "ttft_s": 211.5, "decode_tps": 17.0}
+{"tag": "sub2", "prompt_tokens": 133075, "ttft_s": 307.2, "decode_tps": 34.2}
+{"tag": "P450_after_subagents", "prompt_tokens": 446746, "cached": null, "ttft_s": 1.95, "completion_tokens": 100, "decode_tps": 32.8, "same_as_cold": true}
+{"tag": "flood0", "prompt_tokens": 88334, "cached": null, "ttft_s": 64.3, "completion_tokens": 16, "decode_tps": 89.9}
+{"tag": "flood1", "prompt_tokens": 88335, "cached": null, "ttft_s": 64.41, "completion_tokens": 16, "decode_tps": 91.5}
+{"tag": "flood2", "prompt_tokens": 88334, "cached": null, "ttft_s": 64.28, "completion_tokens": 16, "decode_tps": 36.9}
+{"tag": "flood3", "prompt_tokens": 88337, "cached": null, "ttft_s": 64.36, "completion_tokens": 16, "decode_tps": 45.6}
+{"tag": "flood4", "prompt_tokens": 88333, "cached": null, "ttft_s": 64.2, "completion_tokens": 16, "decode_tps": 91.7}
+{"tag": "flood5", "prompt_tokens": 88335, "cached": null, "ttft_s": 64.39, "completion_tokens": 16, "decode_tps": 91.5}
+{"tag": "flood6", "prompt_tokens": 88338, "cached": null, "ttft_s": 64.25, "completion_tokens": 16, "decode_tps": 92.1}
+{"tag": "flood7", "prompt_tokens": 88336, "cached": null, "ttft_s": 64.38, "completion_tokens": 16, "decode_tps": 91.2}
+{"tag": "P450_after_flood", "prompt_tokens": 446746, "cached": null, "ttft_s": 9.71, "completion_tokens": 100, "decode_tps": 33.4, "same_as_cold": true, "slots": ["1230 by group: {4: 175, 0: 705, 3: 175, 2: 175}", "1230 by group: 
+{"tag": "mem_floor_after", "mem_floor_gb": {"head": 6.01, "worker": 8.75}}

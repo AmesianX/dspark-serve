@@ -62,7 +62,7 @@ check("ab_scale=1 기록", ab._req_scales.get("a") == 1.0)
 check("ab_scale=0 기록", ab._req_scales.get("b") == 0.0)
 check("미지정은 비추적 → 전역값", "c" not in ab._req_scales)
 check("숫자 아닌 값은 비추적", "d" not in ab._req_scales)
-check("[0,1] 밖은 제한", ab._req_scales.get("e") == 1.0)
+check("[0,1] 밖은 거부 → 비추적(원본) — 11-27 이전엔 1로 잘랐다", "e" not in ab._req_scales)
 ab.forget_request("a")
 check("forget_request", "a" not in ab._req_scales)
 

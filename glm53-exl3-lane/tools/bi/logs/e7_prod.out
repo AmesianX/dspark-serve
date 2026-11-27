@@ -1,0 +1,6 @@
+A alone repeat identical: True
+[mix 0] A during cold prefills == alone: True  (A 12.6 t/s)
+[mix 1] A during cold prefills == alone: True  (A 10.9 t/s)
+[mix 2] A during cold prefills == alone: True  (A 10.9 t/s)
+[conc 0] ABCD concurrent == sequential: {'A': True, 'B': True, 'C': True, 'D': True}
+[conc 1] ABCD concurrent == sequential: {'A': True, 'B': True, 'C': True, 'D': True}

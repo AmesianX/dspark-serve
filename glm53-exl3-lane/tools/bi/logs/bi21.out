@@ -1,0 +1,18 @@
+   Maximum concurrency for 524,288 tokens per request: 2.42x
+{"phase": "warm4", "X": ""}
+{"phase": "warm4", "X": ""}
+{"phase": "alone", "X": "# 전체 구조 요약 (5줄)\n\n1. **Scheduler (v1/core/sched/scheduler.py)**: vLLM V1 엔진의 핵심 스케줄러로, `schedule()`에서 running/waiting 큐의 "}
+{"phase": "co", "X": "# 전체 구조 요약 (5줄)\n\n1. **Scheduler (v1/core/sched/scheduler.py)**: vLLM V1 엔진의 핵심 스케줄러로, `schedule()`에서 running/waiting 큐의 "}
+rows identical through final norm: 0 / 132
+first divergence at (0, '1b_c3_init_state') rows 62
+first divergence at (0, '1b_d_recurrent') rows 68
+first divergence at (12, '1b_d_recurrent') rows 2
+148900 ((0, '1b_c3_init_state'), 0.0009173750877380371)
+148901 ((0, '1b_c3_init_state'), 0.0009173750877380371)
+148902 ((0, '1b_c3_init_state'), 0.0009173750877380371)
+148903 ((0, '1b_c3_init_state'), 0.0009173750877380371)
+148904 ((0, '1b_c3_init_state'), 0.0009173750877380371)
+148905 ((0, '1b_c3_init_state'), 0.0009173750877380371)
+148906 ((0, '1b_c3_init_state'), 0.0009173750877380371)
+148907 ((0, '1b_c3_init_state'), 0.0009173750877380371)
+pos 149011 first@(0, '1b_d_recurrent') maxdiff 3.05e-04 alone: file13 rows_in_fwd=5 occ=1 | batch: file24 rows_in_fwd=12 occ=1

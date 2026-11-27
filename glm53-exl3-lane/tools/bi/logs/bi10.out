@@ -1,0 +1,16 @@
+   Maximum concurrency for 524,288 tokens per request: 2.42x
+1
+1
+{"phase": "warm", "X": ""}
+{"phase": "alone", "X": "# 전체 구조 요약 (5줄)\n\n1. **Scheduler (v1/core/sched/scheduler.py)**: vLL"}
+{"phase": "batch", "X": "# 전체 구조 요약 (5줄)\n\n1. **Scheduler (v1/core/sched/scheduler.py)**: vLL"}
+rows alone 102 batch 103 common (pos,tok) 97
+rows identical through final norm: 97 / 97
+148900 None
+148901 None
+148902 None
+148903 None
+148904 None
+148905 None
+148906 None
+148907 None

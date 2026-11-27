@@ -1,23 +1,27 @@
-"""HTTP control for the runtime abliteration switch (see ab_switch.py).
+"""Read-only HTTP view of the runtime abliteration switch (see ab_switch.py).
 
-Registers ``GET/POST /ab`` on the API server so a client can read or flip the
-switch without restarting: the served checkpoint is the original (refusal
-intact) one and the abliteration edit is a rank-24 adapter applied at
-``o_proj``, so ``scale`` picks which model answers the next forward pass.
+The served checkpoint is the original (refusal intact) one and the
+abliteration edit is a rank-24 adapter applied at ``o_proj``. A request turns
+it on for ITSELF ONLY:
 
-Under TP the switch lives in every worker process, so a flip has to reach all
-of them. ``collective_rpc`` is the supported way to do that, which is why this
-ships as a pair: a ``vllm.general_plugins`` entry installs the worker-side
-method, a ``vllm.endpoint_plugins`` entry exposes it over HTTP. Both must be
-named in ``VLLM_PLUGINS``.
+    {"vllm_xargs": {"ab_scale": 1}}     -> this request abliterated
+    (absent, or anything invalid)       -> original
 
-    POST /ab {"scale": 1.0}   -> abliterated for subsequent requests
-    POST /ab {"scale": 0.0}   -> original (default)
-    GET  /ab                  -> {"scale": ..., "workers": [...]}
+    GET  /ab   -> what the workers hold (default, per-request overrides, ...)
+    POST /ab   -> 410 Gone
 
-The route is on the same port as the inference API and so is covered by the
-same API key; it is still a behaviour-changing control, so do not expose this
-port beyond the hosts that already serve inference.
+``POST /ab`` used to set the engine-wide default, which every request without
+its own scale follows -- so any client could change every other client's model.
+Clients are not trusted, so that write path is gone (2026-11-27), including the
+worker RPC behind it: not even ``VLLM_SERVER_DEV_MODE``'s ``/collective_rpc``
+can reach a setter. The default is ``GLM53_AB_SCALE`` at startup, fixed for the
+life of the process.
+
+Under TP the switch lives in every worker process, so reads go through
+``collective_rpc``; that is why this ships as a pair: a
+``vllm.general_plugins`` entry installs the worker-side read methods, a
+``vllm.endpoint_plugins`` entry exposes them over HTTP. Both must be named in
+``VLLM_PLUGINS``.
 """
 
 from __future__ import annotations
@@ -40,12 +44,6 @@ logger = init_logger("vllm." + __name__)
 router = APIRouter()
 
 
-def _worker_set_scale(self, scale: float) -> float:  # bound onto the worker
-    import ab_switch
-
-    return ab_switch.set_scale(scale)
-
-
 def _worker_get_scale(self) -> float:
     import ab_switch
 
@@ -64,10 +62,12 @@ class Glm53AbWorkerPlugin:
     def __call__(self) -> None:
         from vllm.v1.worker.gpu_worker import Worker
 
-        Worker.glm53_ab_set_scale = _worker_set_scale
+        # Read-only on purpose: no setter is installed, so nothing that can
+        # call a worker method (our routes, or vLLM's dev /collective_rpc) can
+        # change the default for other requests.
         Worker.glm53_ab_get_scale = _worker_get_scale
         Worker.glm53_ab_info = _worker_info
-        logger.info("[ab] worker RPC 등록됨 (glm53_ab_set_scale/get_scale/info)")
+        logger.info("[ab] worker RPC 등록됨 (읽기 전용: get_scale/info)")
 
 
 def register_worker_methods() -> None:
@@ -93,6 +93,7 @@ async def ab_get(raw_request: Request) -> JSONResponse:
         "workers": values,
         "consistent": len(set(values)) <= 1,
         "mode": "abliterated" if values and values[0] else "original",
+        "global_write": False,
     }
     if details:
         head = details[0] or {}
@@ -106,6 +107,7 @@ async def ab_get(raw_request: Request) -> JSONResponse:
                 "fills": [d.get("fills") for d in details],
                 "tracked_requests": [d.get("tracked_requests") for d in details],
                 "overrides": head.get("overrides"),
+                "rejected": [d.get("rejected") for d in details],
                 "details": details,
             }
         )
@@ -114,32 +116,18 @@ async def ab_get(raw_request: Request) -> JSONResponse:
 
 @router.post("/ab")
 async def ab_post(raw_request: Request) -> JSONResponse:
-    body = await raw_request.json()
-    if "scale" in body:
-        try:
-            scale = float(body["scale"])
-        except (TypeError, ValueError):
-            return JSONResponse({"error": "scale must be a number"}, status_code=400)
-    elif "on" in body:
-        scale = 1.0 if body["on"] else 0.0
-    else:
-        return JSONResponse({"error": "pass scale or on"}, status_code=400)
-    if not 0.0 <= scale <= 1.0:
-        return JSONResponse({"error": "scale must be in [0, 1]"}, status_code=400)
-
-    engine = raw_request.app.state.engine_client
-    try:
-        values = await engine.collective_rpc("glm53_ab_set_scale", args=(scale,))
-    except Exception as exc:  # pragma: no cover - surfaced to the caller
-        return JSONResponse({"error": repr(exc)}, status_code=500)
-    logger.info("[ab] scale → %.2f (워커 %d개)", scale, len(values))
+    # Refused without reading the body: there is nothing a client can send
+    # here that we would act on. Logged so a stale client is visible.
+    client = raw_request.client.host if raw_request.client else "?"
+    logger.warning("[ab] POST /ab 거부 (%s) — 전역 스위치 없음, 요청별 vllm_xargs.ab_scale 사용", client)
     return JSONResponse(
         {
-            "scale": values[0] if values else scale,
-            "workers": values,
-            "consistent": len(set(values)) <= 1,
-            "mode": "abliterated" if scale else "original",
-        }
+            "error": "POST /ab is gone: the engine-wide switch let any client "
+            "change every other client's model. Ask for the edit on your own "
+            'request instead: {"vllm_xargs": {"ab_scale": 1}}.',
+            "global_write": False,
+        },
+        status_code=410,
     )
 
 

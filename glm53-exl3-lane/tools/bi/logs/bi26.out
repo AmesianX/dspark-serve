@@ -1,0 +1,21 @@
+[SYNC]   헤드 == 워커(10.0.1.2) (670 files, exp/glm53-kv-offload@73fe13a)
+   Maximum concurrency for 524,288 tokens per request: 2.42x
+4_mlp_out,2_attn_out
+{"phase": "alone", "X": "# 전체 구조 요약 (5줄)\n\n1. **Scheduler (v1"}
+{"phase": "co", "X": "# 전체 구조 요약 (5줄)\n\n1. **Scheduler (v1/core/sched/scheduler.py)**: vLLM V1 엔진의 핵심 스케줄러로, `schedule()`에서 running/waiting 큐의 "}
+[BI-DBG] step qlens=[997] seq_lens=[148965] prefilling=[True] d=0
+[BI-DBG] step qlens=[5, 987, 989, 994] seq_lens=[148975, 148955, 148957, 148962] prefilling=[False, True, True, True] d=5
+[WORKER] memwatch off
+rows alone 1019 batch 4060 common (pos,tok) 1014
+rows identical through final norm: 163 / 1014
+first divergence at (0, '2_attn_out') rows 45
+first divergence at (3, '2_attn_out') rows 3
+first divergence at (4, '2_attn_out') rows 803
+pos 148136 first@(3, '2_attn_out') maxdiff 7.81e-03 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 148137 first@(4, '2_attn_out') maxdiff 2.44e-04 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 148138 first@(4, '2_attn_out') maxdiff 2.44e-04 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 148139 first@(4, '2_attn_out') maxdiff 2.44e-04 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 148140 first@(4, '2_attn_out') maxdiff 4.88e-04 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 148141 first@(4, '2_attn_out') maxdiff 1.22e-04 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 148142 first@(4, '2_attn_out') maxdiff 1.22e-04 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 148143 first@(4, '2_attn_out') maxdiff 2.59e-04 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1

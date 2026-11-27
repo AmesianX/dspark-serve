@@ -236,7 +236,15 @@ EXTRA_ENVS=()
 # [ours] 2026-09-03 디코드 커널 A/B: env 파일의 B12X_* 노브를 그대로 컨테이너로 통과
 for _v in "${!B12X_@}"; do EXTRA_ENVS+=(-e "$_v=${!_v}"); done
 # [ours] MTP 드래프트 INT4 헤드 / eh_proj FP8 (env 파일)
-for _v in VLLM_EXL3_INT4_DRAFT_HEAD VLLM_EXL3_MOE_SWIGLU_CLAMP VLLM_EXL3_MTP_EH_PROJ_QUANT VLLM_EXL3_SKINNY_FP32 VLLM_EXL3_PREFILL_BF16 VLLM_EXL3_PREFILL_BF16_MIN_M VLLM_PREFIX_CACHE_RETENTION_INTERVAL; do [[ -n "${!_v:-}" ]] && EXTRA_ENVS+=(-e "$_v=${!_v}"); done
+# [ours] 2026-11-27 온도 0 배치 불변성 (BATCH_INVARIANCE.md). 운영 스위치 하나로 7개 경로를 켠다:
+#  dense(Marlin ≤16행/프리필 persistent) · mHC(역할별 고정) · MLA(혼합 스텝 분리) · MoE(trellis/프리필 플랜 분리)
+#  · 라우터 · grouped_topk(1024행) · 인덱서(고정설정 Triton). 개별 GLM53_BI_* 는 진단용으로 남김.
+if [[ "${GLM53_BATCH_INVARIANT:-0}" == "1" ]]; then
+  for _v in GLM53_BI_DENSE GLM53_BI_MHC GLM53_BI_MLA GLM53_BI_MOE GLM53_BI_ROUTER GLM53_BI_TOPK GLM53_BI_INDEXER; do
+    printf -v "$_v" '%s' "${!_v:-1}"
+  done
+fi
+for _v in GLM53_MTP_CONF_PROBE GLM53_BI_PROBE GLM53_BI_PROBE_MINPOS GLM53_BI_PROBE_MAXLAYER GLM53_BI_PROBE_MINLAYER GLM53_BI_PROBE_TAGS GLM53_BI_DBG_POS GLM53_BI_ZERO_GATHER GLM53_BI_IDX_DUMP GLM53_BI_DENSE_PREFILL GLM53_BI_DENSE_MARLIN16 GLM53_BI_MHC GLM53_BI_MLA GLM53_BI_MOE GLM53_BI_DENSE GLM53_BI_DEBUG GLM53_BI_ROUTER GLM53_BI_TOPK GLM53_BI_INDEXER GLM53_BI_KDA GLM53_BI_STATE_DIR VLLM_EXL3_INT4_DRAFT_HEAD VLLM_EXL3_MOE_SWIGLU_CLAMP VLLM_EXL3_MTP_EH_PROJ_QUANT VLLM_EXL3_SKINNY_FP32 VLLM_EXL3_PREFILL_BF16 VLLM_EXL3_PREFILL_BF16_MIN_M VLLM_PREFIX_CACHE_RETENTION_INTERVAL; do [[ -n "${!_v:-}" ]] && EXTRA_ENVS+=(-e "$_v=${!_v}"); done
 # [ours] 2노드 소형 all-reduce 지연 A/B (env 파일): NCCL_PROTO / NCCL_ALGO
 # [ours] 드래프트 전용 축소 어휘 lm_head (MTP). 빈 값이면 끔
 for _v in VLLM_GLM53_DRAFT_VOCAB; do [[ -n "${!_v:-}" ]] && EXTRA_ENVS+=(-e "$_v=${!_v}"); done
@@ -312,8 +320,35 @@ UTF8_GUARD_ARGS=()
 UTF8_GUARD_ENVS=(-e "VLLM_UTF8_GUARD=$UTF8_GUARD" -e "VLLM_UTF8_GUARD_TOKENIZER=$MODEL_PATH")
 
 SPEC_ARGS=()
+# [ours] 2026-11-26 MTP_PER_BATCH: vLLM batch-size dynamic speculative decoding
+# (num_speculative_tokens_per_batch_size, inclusive ranges). Empty = fixed MTP.
+# Measured optimum for concurrent decode (KV_OFFLOAD.md / concurrency sweep):
+#   MTP_PER_BATCH='[[1,1,4],[2,2,3],[3,4,2]]'   (single stream keeps MTP=4)
+MTP_PER_BATCH="${MTP_PER_BATCH:-}"
+# [ours] 2026-11-26 SCHED_POLICY=priority: requests carry `priority` (lower =
+# first; codemason sends 1 on sub-agent requests, nothing on the main
+# conversation). Orders the waiting queue and picks KV-preemption victims; it
+# does not evict a running request just to free a max-num-seqs slot.
+SCHED_POLICY="${SCHED_POLICY:-}"
+[[ -z "$SCHED_POLICY" || "$SCHED_POLICY" == "fcfs" || "$SCHED_POLICY" == "priority" ]] \
+  || _num_err "SCHED_POLICY='$SCHED_POLICY' must be empty, fcfs or priority"
+[[ -n "$SCHED_POLICY" ]] && SPEC_POLICY_ARGS=(--scheduling-policy "$SCHED_POLICY") || SPEC_POLICY_ARGS=()
+if [[ -n "$MTP_PER_BATCH" ]]; then
+  [[ "$MTP_PER_BATCH" =~ ^\[(\[[0-9]+,[0-9]+,[0-9]+\],?)+\]$ ]] \
+    || _num_err "MTP_PER_BATCH='$MTP_PER_BATCH' must look like [[1,1,4],[2,2,3],[3,4,2]] (no spaces)"
+fi
 if [[ "$MTP" != "0" ]]; then
-  SPEC_ARGS=(--speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":$MTP}")
+  if [[ -n "$MTP_PER_BATCH" ]]; then
+    # We already run the V2 GPU model runner ("Using V2 Model Runner"), but
+    # VllmConfig._maybe_override_dynamic_sd_cudagraph_mode sees the inferred
+    # flag as false and drops FULL_AND_PIECEWISE to PIECEWISE (measured: single
+    # stream 43.7 -> 28.4 t/s). State the runner explicitly so the decode FULL
+    # graphs stay; one graph is captured per scheduled depth.
+    EXTRA_ENVS+=(-e VLLM_USE_V2_MODEL_RUNNER=1)
+    SPEC_ARGS=(--speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":$MTP,\"num_speculative_tokens_per_batch_size\":$MTP_PER_BATCH}")
+  else
+    SPEC_ARGS=(--speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":$MTP}")
+  fi
 elif [[ "$SPEC" == "dflash" ]]; then
   { test -f "$DFLASH_DIR/config.json" && test -f "$DFLASH_DIR/model.safetensors"; } || {
     echo "DFlash2 draft weights not found or incomplete at $DFLASH_DIR (run install.sh, or SPEC=none)" >&2
@@ -426,6 +461,42 @@ ATTN_BACKEND="${ATTN_BACKEND-B12X_MLA_SPARSE}"
 KV_SKIP_LAYERS="${KV_SKIP_LAYERS-sliding_window}"
 [[ -n "$KV_SKIP_LAYERS" ]] && KV_ARGS+=(--kv-cache-dtype-skip-layers "$KV_SKIP_LAYERS")
 [[ -n "$KV_CACHE_MEMORY" ]] && KV_ARGS+=(--kv-cache-memory "$KV_CACHE_MEMORY")
+
+# [ours] 2026-11-26 exp/glm53-kv-offload — per-rank NVMe KV offload
+# (KV_OFFLOAD.md). Off unless KV_OFFLOAD=1. Same KV_OFFLOAD_DIR path on both
+# nodes; each node keeps only its own rank's shard there. Pass the SAME values
+# on both ranks (the slot layout is part of the store fingerprint).
+KV_OFFLOAD="${KV_OFFLOAD:-0}"
+KV_OFFLOAD_DIR="${KV_OFFLOAD_DIR:-$HOME/glm53-kv-offload}"
+KV_OFFLOAD_BYTES="${KV_OFFLOAD_BYTES:-200000000000}"
+KV_OFFLOAD_THREADS="${KV_OFFLOAD_THREADS:-8}"
+KV_OFFLOAD_DISK_RESERVE_GB="${KV_OFFLOAD_DISK_RESERVE_GB:-100}"
+if [[ "$KV_OFFLOAD" == "1" ]]; then
+  [[ "$KV_OFFLOAD_BYTES" =~ ^[1-9][0-9]*$ ]] || _num_err "KV_OFFLOAD_BYTES='$KV_OFFLOAD_BYTES' must be a positive int"
+  [[ "$KV_OFFLOAD_THREADS" =~ ^[1-9][0-9]*$ ]] || _num_err "KV_OFFLOAD_THREADS='$KV_OFFLOAD_THREADS' must be a positive int"
+  mkdir -p "$KV_OFFLOAD_DIR"
+  # The store is preallocated, so check the disk once here: the existing store
+  # of this node counts as already reserved.
+  _have_kb=$(df -Pk "$KV_OFFLOAD_DIR" | awk 'NR==2{print $4}')
+  _store_kb=$(du -sk "$KV_OFFLOAD_DIR" 2>/dev/null | awk '{print $1}')
+  _need_kb=$(( KV_OFFLOAD_BYTES / 1024 + KV_OFFLOAD_DISK_RESERVE_GB * 1048576 - ${_store_kb:-0} ))
+  if (( _have_kb < _need_kb )); then
+    _num_err "KV_OFFLOAD: $KV_OFFLOAD_DIR has $((_have_kb/1048576)) GB free, needs $((_need_kb/1048576)) GB (store + ${KV_OFFLOAD_DISK_RESERVE_GB} GB reserve)"
+  fi
+  _kvc=/usr/local/lib/python3.12/dist-packages/vllm/distributed/kv_transfer/kv_connector/v1
+  for _f in config scheduler worker common; do
+    EXTRA_VOLS+=(-v "$LANE_DIR/overlay/kvconn/$_f.py:$_kvc/offloading/$_f.py:ro")
+  done
+  EXTRA_VOLS+=(-v "$LANE_DIR/overlay/kvconn/offloading_connector.py:$_kvc/offloading_connector.py:ro")
+  EXTRA_VOLS+=(-v "$LANE_DIR/overlay/kvoffload/glm53_nvme.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/kv_offload/glm53_nvme.py:ro")
+  EXTRA_VOLS+=(-v "$KV_OFFLOAD_DIR:/kv-offload")
+  # Persistent prefix-hash seed: without it vLLM draws NONE_HASH from
+  # os.urandom at every boot and the stored chunks can never be found again
+  # after a restart. Dedicated variable (overlay) instead of PYTHONHASHSEED.
+  EXTRA_VOLS+=(-v "$LANE_DIR/overlay/v1core/kv_cache_utils.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/core/kv_cache_utils.py:ro")
+  EXTRA_ENVS+=(-e "VLLM_PREFIX_HASH_SEED=${KV_OFFLOAD_HASH_SEED:-glm53-kv-offload-1}")
+  KV_ARGS+=(--kv-transfer-config "{\"kv_connector\":\"OffloadingConnector\",\"kv_role\":\"kv_both\",\"kv_load_failure_policy\":\"recompute\",\"kv_connector_extra_config\":{\"spec_name\":\"NvmeOffloadingSpec\",\"spec_module_path\":\"vllm.v1.kv_offload.glm53_nvme\",\"root_dir\":\"/kv-offload\",\"capacity_bytes\":$KV_OFFLOAD_BYTES,\"io_threads\":$KV_OFFLOAD_THREADS}}")
+fi
 EAGER_ARGS=()
 [[ "$EAGER" != "0" ]] && EAGER_ARGS=(--enforce-eager)
 # ---------------------------------------------------------------------------
@@ -622,6 +693,7 @@ docker run --gpus all -d \
   -v "$LANE_DIR/overlay/exl3.py:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/quantization/exl3.py:ro" \
   -v "$LANE_DIR/overlay/glm5next/model.py:/usr/local/lib/python3.12/dist-packages/vllm/models/glm5next/nvidia/model.py:ro" \
   -v "$LANE_DIR/overlay/glm5next/kda.py:/usr/local/lib/python3.12/dist-packages/vllm/models/glm5next/nvidia/kda.py:ro" \
+  -v "$LANE_DIR/overlay/mhc_tilelang.py:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/kernels/mhc/tilelang.py:ro" \
   -v "$LANE_DIR/overlay/glm5next/mtp.py:/usr/local/lib/python3.12/dist-packages/vllm/models/glm5next/nvidia/mtp.py:ro" \
   -v "$LANE_DIR/overlay/glm5next/attention.py:/usr/local/lib/python3.12/dist-packages/vllm/models/glm5next/nvidia/attention.py:ro" \
   -v "$LANE_DIR/$CHAT_TEMPLATE_SRC:/lane/chat_template.jinja:ro" \
@@ -679,7 +751,7 @@ docker run --gpus all -d \
     --gpu-memory-utilization "$GMU" \
     --max-model-len "$MAX_LEN" \
     --max-num-seqs "$MAX_SEQS" --block-size "$BLOCK_SIZE" --mm-processor-cache-gb "$MM_CACHE_GB" \
-    "${LOAD_ARGS[@]}" "${MNBT_ARGS[@]}" "${SPEC_ARGS[@]}" "${KV_ARGS[@]}" \
+    "${LOAD_ARGS[@]}" "${MNBT_ARGS[@]}" "${SPEC_ARGS[@]}" "${SPEC_POLICY_ARGS[@]}" "${KV_ARGS[@]}" \
     "${KDA_ARGS[@]}" \
     "${EAGER_ARGS[@]}" \
     "${UTF8_GUARD_ARGS[@]}" \

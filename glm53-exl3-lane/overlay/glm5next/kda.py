@@ -53,6 +53,51 @@ except ImportError:  # pragma: no cover
     _ab_switch = None
 
 
+
+_BI_ON = bool(os.environ.get("GLM53_BI_PROBE"))
+
+
+def _bi_sub_probe(prefix: str):
+    """[ours] GLM53_BI_PROBE: returns a recorder for this layer's sub-points
+    while a probed forward is active, else None."""
+    if not _BI_ON:
+        return None
+    from vllm.models.glm5next.nvidia import model as _m
+    if _m._BI_STATE.get("sel") is None:
+        return None
+    try:
+        idx = int(prefix.split("layers.")[1].split(".")[0])
+    except (IndexError, ValueError):
+        return None
+    return lambda tag, x: _m._bi_probe(idx, "1b_" + tag, x)
+
+
+# [ours] GLM53_BI_KDA: FlashKDA prefill over several sequences at once gives a
+# sequence different bits than running it alone (workspace/scheduling depend on
+# the batch). Run each prefill sequence in its own call, exactly as when alone.
+_BI_KDA = os.environ.get("GLM53_BI_KDA", "0") == "1"
+
+
+def _bi_flashkda_per_seq(*, q, k, v, g, beta, cu_seqlens, initial_state, **kw):
+    bounds = cu_seqlens.tolist()
+    outs, finals = [], []
+    for i in range(len(bounds) - 1):
+        a, b = bounds[i], bounds[i + 1]
+        o, f = _flashkda_prefill(
+            q=q[:, a:b],
+            k=k[:, a:b],
+            v=v[:, a:b],
+            g=g[:, a:b] if g.dim() == q.dim() else g[a:b],
+            beta=beta[:, a:b] if beta.dim() == q.dim() - 1 else beta[a:b],
+            cu_seqlens=cu_seqlens.new_tensor([0, b - a]),
+            initial_state=initial_state[i : i + 1],
+            **kw,
+        )
+        outs.append(o)
+        finals.append(f)
+    return torch.cat(outs, dim=1), torch.cat(finals, dim=0)
+
+
 class _Glm5NextMergedColumnParallelLinear(MergedColumnParallelLinear):
     """Merged projection with multiple replicated output shards.
 
@@ -306,8 +351,11 @@ class Glm5NextLinearAttention(GatedDeltaNetAttention):
         positions: torch.Tensor,
     ) -> torch.Tensor:
         num_tokens = hidden_states.size(0)
+        # [ours] GLM53_BI_PROBE sub-points (see model.py); None when off.
+        _bp = _bi_sub_probe(self.prefix)
         # One merged GEMM for q, k, v, b, f_a, g_a (replaces 6 separate GEMMs).
         projected = self.in_proj_qkvbfg_a(hidden_states)[0]
+        if _bp: _bp("a_in_proj", projected)
         qkv, beta_raw, f_a, g_a = projected.split(
             [
                 3 * self.local_projection_size,
@@ -328,6 +376,7 @@ class Glm5NextLinearAttention(GatedDeltaNetAttention):
         g1 = g1.reshape(1, -1, self.local_num_heads, self.head_dim)
 
         g_proj_states = self.g_b_proj(g_a)[0]
+        if _bp: _bp("b_f_b_proj", g1.reshape(num_tokens, -1)); _bp("c_g_b_proj", g_proj_states)
         # Must stay 3D: rms_norm_gated reads H from g.shape[-2].
         g2 = g_proj_states.reshape(-1, self.local_num_heads, self.head_dim)
 
@@ -344,9 +393,12 @@ class Glm5NextLinearAttention(GatedDeltaNetAttention):
             beta=beta,
             core_attn_out=core_attn_out,
         )
+        if _bp: _bp("d_recurrent", core_attn_out.reshape(num_tokens, -1))
         core_attn_out = self.o_norm(core_attn_out, g2)
         core_attn_out = core_attn_out.reshape(core_attn_out.size(1), -1)
+        if _bp: _bp("e_o_norm", core_attn_out)
         out = self.o_proj(core_attn_out)[0]
+        if _bp: _bp("f_o_proj", out)
         # LANE PATCH (2026-10-01): runtime abliteration switch, see ab_switch.py.
         # The 34 KDA layers' o_proj; the 11 sparse-MLA ones are in mla.py.
         if _ab_switch is not None:
@@ -488,6 +540,37 @@ class Glm5NextLinearAttention(GatedDeltaNetAttention):
                 metadata=attn_metadata_narrowed,
             ).transpose(0, 1)
             q_ns, k_ns, v_ns = qkv_ns.split(self.local_projection_size, dim=-1)
+            _bp2 = _bi_sub_probe(self.prefix)
+            if _bp2 is not None:
+                _ns_idx = (
+                    non_spec_token_indx
+                    if use_spec and non_spec_token_indx is not None
+                    else torch.arange(qkv_ns.shape[0], device=qkv_ns.device)
+                )
+                _full = qkv_ns.new_zeros(num_actual_tokens, qkv_ns.shape[-1])
+                _full.index_copy_(0, _ns_idx, qkv_ns)
+                _bp2("c2_conv", _full)
+                _st = gather_initial_states(
+                    recurrent_state, non_spec_state_indices_tensor, has_initial_state
+                )
+                _cs = torch.stack(
+                    [_st.reshape(_st.shape[0], -1).double().sum(-1),
+                     _st.reshape(_st.shape[0], -1).double().abs().sum(-1)], -1
+                ).float()
+                _lens = (non_spec_query_start_loc[1:] - non_spec_query_start_loc[:-1]).long()
+                _rows = torch.repeat_interleave(_cs[: _lens.numel()], _lens, dim=0)
+                _fs = _rows.new_zeros(num_actual_tokens, 2)
+                _fs.index_copy_(0, _ns_idx[: _rows.shape[0]], _rows)
+                _bp2("c3_init_state", _fs)
+                _sd = os.environ.get("GLM53_BI_STATE_DIR")
+                if _sd and torch.distributed.get_rank() == 0:
+                    os.makedirs(_sd, exist_ok=True)
+                    _li = int(self.prefix.split("layers.")[1].split(".")[0])
+                    for _i, _ql in enumerate(_lens.tolist()):
+                        torch.save(
+                            {"state": _st[_i].cpu(), "has_init": bool(has_initial_state[_i])},
+                            os.path.join(_sd, f"L{_li:02d}_q{_ql}.pt"),
+                        )
         elif attn_metadata_narrowed.num_decodes > 0:
             assert non_spec_state_indices_tensor is not None
             decode_conv_indices = non_spec_state_indices_tensor[
@@ -560,10 +643,7 @@ class Glm5NextLinearAttention(GatedDeltaNetAttention):
                 # FlashKDA fuses the bounded gate and the beta sigmoid
                 # in-kernel: pass raw bf16 beta and raw g1, unlike the chunk
                 # path below which wants the pre-sigmoided fp32 beta.
-                (
-                    core_attn_out_non_spec,
-                    last_recurrent_state,
-                ) = _flashkda_prefill(
+                _fk_args = dict(
                     q=_rearr(q_ns),
                     k=_rearr(k_ns),
                     v=_rearr(v_ns),
@@ -575,6 +655,16 @@ class Glm5NextLinearAttention(GatedDeltaNetAttention):
                     initial_state=initial_state,
                     cu_seqlens=non_spec_query_start_loc,
                 )
+                if _BI_KDA and non_spec_query_start_loc.numel() > 2:
+                    (
+                        core_attn_out_non_spec,
+                        last_recurrent_state,
+                    ) = _bi_flashkda_per_seq(**_fk_args)
+                else:
+                    (
+                        core_attn_out_non_spec,
+                        last_recurrent_state,
+                    ) = _flashkda_prefill(**_fk_args)
             else:
                 (
                     core_attn_out_non_spec,

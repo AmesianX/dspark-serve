@@ -1,0 +1,19 @@
+[SYNC]   헤드 == 워커(10.0.1.2) (684 files, exp/glm53-kv-offload@86b27b0)
+   Maximum concurrency for 524,288 tokens per request: 2.42x
+== off: BI env head= worker= eager=0
+[off] hash-map  34.4 t/s | accept/step 1.849 | 스텝  12.2/s ( 82.3ms)
+[off] 한국어산문     38.4 t/s | accept/step 2.082 | 스텝  12.4/s ( 80.6ms)
+[off] 한국어코드     40.8 t/s | accept/step 2.393 | 스텝  12.1/s ( 82.6ms)
+[off] prompt 82387 ttft 60.34s -> prefill 1365 t/s
+[off] prompt 82387 ttft 60.1s -> prefill 1371 t/s
+[SYNC]   헤드 == 워커(10.0.1.2) (684 files, exp/glm53-kv-offload@86b27b0)
+   Maximum concurrency for 524,288 tokens per request: 2.42x
+== on: BI env head=1 worker=1 eager=0
+[on] hash-map  35.3 t/s | accept/step 1.922 | 스텝  12.1/s ( 82.6ms)
+[on] 한국어산문     34.4 t/s | accept/step 1.857 | 스텝  12.0/s ( 83.1ms)
+[on] 한국어코드     42.1 t/s | accept/step 2.500 | 스텝  12.1/s ( 82.8ms)
+[on] prompt 82385 ttft 61.76s -> prefill 1334 t/s
+[on] prompt 82388 ttft 61.6s -> prefill 1337 t/s
+E5-A co==alone False
+E5-B co==alone True
+E5-D co==alone True

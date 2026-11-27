@@ -2,7 +2,7 @@
 
 설치·업그레이드는 저장소 루트 [`README.md`](../README.md), 운영 명령과 실측은 [`README.md`](README.md).
 이 문서는 **무엇을 왜 어떻게 바꿨는지**와 **다시 밟지 말 함정**을 남긴다. 각 오버레이의 정확한 변경은
-`overlay/<파일>.diff`(이미지 원본 `.orig` 대비)에 있다. 최종 갱신 2026-11-01.
+`overlay/<파일>.diff`(이미지 원본 `.orig` 대비)에 있다. 최종 갱신 2026-11-27.
 
 ## 0. 현재 상태
 원본 `brandonmusic/GLM-5.3-Flash-tr3-4bpw`(EXL3 4bpw) 하나를 Entrpi v2.3-tier1 vLLM 이미지로 2노드 TP2 서빙.
@@ -104,3 +104,13 @@ README.md §4~§5 및 메모리 `project_glm53_decode_kernel_truth`, `project_gl
   첫 토큰 logprob 이 다른 요청 처리 뒤에도 변하지 않아야 한다).
 
 ### 3.11 `/ab` 런타임 스위치 — `AB-SWITCH.md`. ### 3.12 UTF-8 가드 — `UTF8-GUARD.md`. ### 3.13 이미지 수용 — `VISION.md`.
+
+### 3.14 NVMe KV 오프로드 (11-26~27, 브랜치 `exp/glm53-kv-offload`) — `KV_OFFLOAD.md`, 검증 `KV_OFFLOAD_TESTPLAN.md`
+- 상류 `OffloadingConnector` + 독자 `NvmeOffloadingSpec`(`overlay/kvoffload/glm53_nvme.py`). CPU 계층 없음(통합메모리라 무의미), GPU→고정 바운스→O_DIRECT, 슬롯 고정 크기·rank별 사전할당 파일, 슬롯 헤더(crc·지문)로 rank마다 검증.
+- 상류 커넥터 수정(`overlay/kvconn/*.diff`): 실패 전파(assert 대신 재계산), kpool tail(스크래치) 그룹 제외, 하이브리드 무효블록 처리.
+- 퇴출 = `SegmentLRUPolicy`(상류 LRU는 KDA 그룹 경계 누락·꼬리가 머리보다 최신이 돼 재사용 대화 복원 0).
+- 함정: ① seed 미고정이면 NONE_HASH가 부팅마다 urandom → 재기동 후 적중 0(`overlay/v1core/kv_cache_utils.py`) ② 같은 키면 옛 내용을 계속 씀 → 커널·수치 바꾸면 `KV_OFFLOAD_HASH_SEED` 갈 것 ③ 슬롯 레이아웃이 지문에 들어가므로 양 rank 같은 값 ④ 프리필 분할점이 4608 격자·512 단위(=KDA 64 배수)라 캐시 출처 무관(2단계) — `--mixed-prefill-token-cap`·`--prefix-match-unit`을 격자 밖 값으로 바꾸면 재검증.
+- 다중 사용자 노출 시: 캐시는 직접 유출·오염 경로가 없지만 TTFT 타이밍으로 '이 접두부를 누가 보냈나' 확인 가능(재기동 후에도 유지). 게이트웨이가 세션별 무작위 `cache_salt`를 강제할 것(`KV_OFFLOAD.md` '격리').
+
+### 3.15 온도0 동시 배치 비결정 (11-26~27, 브랜치) — `BATCH_INVARIANCE.md`
+- 행 수 M·프리필 유무·(cuBLAS) 뷰 위치에 따라 커널 설정이 바뀌어 1비트 차이 → KDA 재귀가 증폭. 해법 = 행 역할(디코드/프리필)별 고정 설정 7곳, 역할은 러너가 호스트값으로 전달, 그래프 캡처 중 전부 디코드. `GLM53_BATCH_INVARIANT=1`. 속도: 디코드 동일, 프리필 −1.5%. ⛔ 작은 GEMM에 cuBLAS 금지(뷰 위치 의존).

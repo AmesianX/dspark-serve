@@ -1,0 +1,40 @@
+   Maximum concurrency for 524,288 tokens per request: 2.42x
+/cache/bi
+{"phase": "warm4", "X": ""}
+{"phase": "alone", "X": "# 전체 구조 요약 (5줄)\n\n1. **Scheduler (v1/core/sched/scheduler.py)**: vLLM V1 엔진의 핵심 스케줄러로, `schedule()`에서 running/waiting 큐의 "}
+{"phase": "co", "X": "# 전체 구조 요약 (5줄)\n\n1. **scheduler.py**는 vLLM V1 엔진의 핵심 스케줄러로, `schedule()`에서 running/waiting 큐의 요청들에 토큰 예"}
+rows identical through final norm: 0 / 83
+first divergence at (0, '1b_c2_conv') rows 1
+first divergence at (0, '1b_d_recurrent') rows 9
+first divergence at (4, '1b_d_recurrent') rows 73
+148900 ((4, '1b_d_recurrent'), 1.52587890625e-05)
+148901 ((4, '1b_d_recurrent'), 1.52587890625e-05)
+148902 ((4, '1b_d_recurrent'), 1.52587890625e-05)
+148903 ((4, '1b_d_recurrent'), 1.1444091796875e-05)
+148904 ((4, '1b_d_recurrent'), 7.62939453125e-06)
+148905 ((0, '1b_c2_conv'), 0.08154296875)
+148906 ((4, '1b_d_recurrent'), 3.814697265625e-06)
+148907 ((4, '1b_d_recurrent'), 7.62939453125e-06)
+pos 148900 first@(4, '1b_d_recurrent') maxdiff 1.53e-05 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 148901 first@(4, '1b_d_recurrent') maxdiff 1.53e-05 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 148902 first@(4, '1b_d_recurrent') maxdiff 1.53e-05 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 148903 first@(4, '1b_d_recurrent') maxdiff 1.14e-05 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 148904 first@(4, '1b_d_recurrent') maxdiff 7.63e-06 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 148906 first@(4, '1b_d_recurrent') maxdiff 3.81e-06 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 148907 first@(4, '1b_d_recurrent') maxdiff 7.63e-06 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 148908 first@(4, '1b_d_recurrent') maxdiff 7.63e-06 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 148909 first@(4, '1b_d_recurrent') maxdiff 1.53e-05 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 148910 first@(4, '1b_d_recurrent') maxdiff 1.53e-05 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 148911 first@(4, '1b_d_recurrent') maxdiff 1.53e-05 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+pos 148912 first@(4, '1b_d_recurrent') maxdiff 6.10e-05 alone: file0 rows_in_fwd=989 occ=1 | batch: file3 rows_in_fwd=2975 occ=1
+[BI-DBG] step qlens=[5120] seq_lens=[147968] prefilling=[True] d=0
+[BI-DBG] step qlens=[994] seq_lens=[148962] prefilling=[True] d=0
+[BI-DBG] step qlens=[5120] seq_lens=[147968] prefilling=[True] d=0
+[BI-DBG] step qlens=[987] seq_lens=[148955] prefilling=[True] d=0
+[BI-DBG] step qlens=[5120] seq_lens=[147968] prefilling=[True] d=0
+[BI-DBG] step qlens=[994] seq_lens=[148962] prefilling=[True] d=0
+[BI-DBG] step qlens=[5120] seq_lens=[147968] prefilling=[True] d=0
+[BI-DBG] step qlens=[989] seq_lens=[148957] prefilling=[True] d=0
+[BI-DBG] step qlens=[989] seq_lens=[148957] prefilling=[True] d=0
+[BI-DBG] step qlens=[994] seq_lens=[148962] prefilling=[True] d=0
+[BI-DBG] step qlens=[5, 987, 989, 994] seq_lens=[148972, 148955, 148957, 148962] prefilling=[False, True, True, True] d=5
