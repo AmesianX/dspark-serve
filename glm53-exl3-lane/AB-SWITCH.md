@@ -31,20 +31,32 @@ curl -H "Authorization: Bearer $KEY" http://localhost:8000/ab   # 상태(읽기 
   예전 `min(max(v,0),1)` 은 NaN 을 그대로 통과시켜 forward 에 NaN 이 들어갔고, 그 요청이
   추적되는 동안 `GET /ab` 가 JSON 직렬화 오류로 500 이 났다.
 - 검증: `tools/test_ab_zero_trust.py`(고치기 전 코드에서 18건 실패 확인), `tools/test_ab_per_request.py`.
-- **프리픽스 캐시는 기본 모델 전용**(2026-11-27). 기동 기본값과 다른 scale 로 도는 요청은
-  캐시를 **읽기만 하고 쓰지 않는다** — GPU 프리픽스 캐시 블록도, NVMe 오프로드도.
-  전에는 ab=1 요청이 계산한 KV 가 같은 해시로 공유 캐시에 들어가, 같은 접두부를 보낸
-  ab=0 요청이 그걸 재사용했다. 라이브 실측(`tools/bi/ab_cache_leak_probe.py`): 재사용 결과가
-  새로 계산한 결과와 **첫 토큰부터** 갈렸다(ab=0→ab=0 재사용은 비트 동일). cm2 사용자는
-  시스템 프롬프트를 공유하므로 ab=1 하나가 전원의 접두부를 오염시킬 수 있었고, NVMe 계층이
-  재기동 뒤에도 남겼다. 한 대화 안에서도 `/ab auto` 의 ab=0 후속 요청이 첫 요청의 KV 를 이어 썼다.
-  수정 후 같은 프로브 PASS. 비용: ab 요청 다음의 기본 요청이 ab 요청이 새로 계산한 꼬리만
-  다시 프리필한다(ab 요청 자신은 공유 접두부를 그대로 읽는다 — 실측 14.5s → 2.0s).
-  scale 로 salt 하는 방식은 기본 캐시를 못 읽어 매 턴 대화 전체를 다시 프리필하므로 쓰지 않는다.
-  판정은 `ab_switch.may_write_cache()` 하나 — `note_request` 와 같은 검증(`_valid`)을 쓴다.
-  게이트: `overlay/v1core/kv_cache_manager.py`(allocate_slots·cache_blocks),
-  `overlay/kvconn/scheduler.py`(max_offload_tokens=0, partial tail 건너뜀).
-  테스트: `tools/test_ab_cache_write.py`(고치기 전 파일에서 3건 실패 확인).
+- **KV 정체성 = (토큰, scale) — scale 별 캐시 네임스페이스**(2026-11-27).
+  체인 해시는 토큰만으로 그대로 두고, 비기본 scale 로 **계산한** KV 는 `tag_hash(체인해시, scale)` 키로
+  등록한다(GPU 프리픽스 캐시와 NVMe 모두). 기본 요청은 꼬리표 없는 키만 찾으므로 ab KV 를 **절대**
+  못 받는다. ab 요청은 블록·청크마다 자기 네임스페이스를 먼저, 없으면 기본을 찾는다. 꼬리표가 체인
+  밖에 있어서 "기본 접두부 + ab 꼬리" 가 이어진다 → `/ab on` 도 `/ab auto` 도 캐시가 산다.
+  - 왜: 전에는 ab=1 KV 가 같은 해시로 공유 캐시에 들어가, 같은 접두부의 ab=0 요청이 재사용하면
+    **첫 토큰부터** 갈렸다(`tools/bi/ab_cache_leak_probe.py`). cm2 는 시스템 프롬프트를 공유하므로
+    ab=1 하나가 전원을 오염시킬 수 있었고 NVMe 가 재기동 뒤까지 남겼다. 첫 수정("ab 요청은 읽기만")은
+    누출은 막았지만 `/ab on` 을 캐시 0 으로 만들었다(같은 접두부 ab=1 세 번: 매번 14.2s).
+    scale 로 체인을 salt 하면(LoRA 식) `/ab auto` 첫 요청이 기본 접두부를 못 읽는다 — 그래서 꼬리표를 체인 밖에 둔다.
+  - NVMe: 저장은 항상 자기 꼬리표 키, 적중 구간은 다시 저장하지 않는다(기본 KV 를 꼬리표로 복제하지 않음).
+    조회는 연속 적중 구간 안에서 청크·경계 키마다 자기 → 기본 순, 대체 적중은 기록해 적재·touch 에 그 키를 쓴다.
+    그래서 ab KV 가 꼬리표 없는 키로 저장되는 경로가 구조적으로 없다.
+  - 실측(`tools/bi/ab_cache_namespace_probe.py`, 실제 RESTARTALL 포함 전부 PASS):
+
+    | 경우 | 결과 |
+    |---|---|
+    | ab=1 이 먼저 채운 접두부를 ab=0 이 재사용 | 새 계산과 비트 동일(누출 없음) |
+    | `/ab on` 같은 접두부 ab=1 세 번 | 14.8 → 2.4 → 2.5s |
+    | `/ab auto` 턴2 ab=1 / 이어지는 ab=0 (22.7K, 새 계산 18.7s) | 7.1s / 7.2s, ab=0 은 새 계산과 비트 동일 |
+    | 재기동 후 NVMe: ab=1 턴2 / ab=0 턴2 (24.3K, 새 계산 19.9s) | **6.2s**(기본 청크+자기 청크) / 12.9s(기본 청크만, 새 계산과 비트 동일) |
+    | 재기동 후 NVMe: `/ab on` 체인 (기본 키 없음) | 8.2s(새 계산 14.8s), 출력이 새 ab=1 계산과 비트 동일 |
+    | 디코드 t/s (kmeas) | 35.0 / 39.1 / 44.9 — 불변 |
+  - 판정 하나: `ab_switch.cache_namespace()`(= `note_request` 와 같은 `_valid`). 입구: `KVCacheManager.get_computed_blocks`
+    (모든 조회의 단일 입구, 그 호출 동안만 `block_pool.lookup_namespace`), 등록: `block_pool.cache_full_blocks`·`cache_partial_block`.
+  - 테스트: `tools/test_ab_cache_namespace.py`(원래 파일에서 누출·미적용·대체 없음 실패 확인).
 
 ## 왜 이 구조인가
 
@@ -84,7 +96,9 @@ abliteration 은 거부를 없애면서 **"없다"고 말하는 능력도 같이
 | `overlay/mla.py` | sparse MLA 11층 훅 (`mla.py:405` 의 `o_proj` 출구) |
 | `overlay/glm5next/kda.py` | KDA 34층 훅 (`kda.py:344`) |
 | `overlay/ab_plugin/` | `GET /ab`(읽기 전용) + 워커 조회(`collective_rpc`). `POST /ab` 는 410 |
-| `overlay/v1core/kv_cache_manager.py` | 비기본 scale 요청은 프리픽스 캐시에 쓰지 않음(읽기는 함) |
+| `overlay/v1core/block_pool.py` | scale 별 캐시 키(꼬리표) 등록, ab 요청 조회는 자기 → 기본 순 |
+| `overlay/v1core/kv_cache_manager.py` | 조회 한 번 동안만 요청의 네임스페이스 지정 |
+| `overlay/kvconn/scheduler.py` | NVMe 키도 같은 규칙(저장=자기 꼬리표, 조회=자기 → 기본) |
 
 플러그인은 vLLM 공식 확장점을 쓴다. 서버 코드를 고치지 않는다. TP 라 스케일이 모든
 워커에 닿아야 해서 두 짝으로 나뉜다 — `vllm.general_plugins` 가 워커 RPC 를 설치하고

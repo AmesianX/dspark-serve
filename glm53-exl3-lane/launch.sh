@@ -719,6 +719,7 @@ docker run --gpus all -d \
   -v "$LANE_DIR/overlay/v1core/sched/scheduler.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/core/sched/scheduler.py:ro" \
   -v "$LANE_DIR/overlay/v1core/single_type_kv_cache_manager.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/core/single_type_kv_cache_manager.py:ro" \
   -v "$LANE_DIR/overlay/v1core/kv_cache_manager.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/core/kv_cache_manager.py:ro" \
+  -v "$LANE_DIR/overlay/v1core/block_pool.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/core/block_pool.py:ro" \
   -v "$CACHE_HOST_PATH/jit/vllm:/root/.cache/vllm" \
   "${EXTRA_VOLS[@]}" \
   -e VLLM_HOST_IP=$HOST_IP \

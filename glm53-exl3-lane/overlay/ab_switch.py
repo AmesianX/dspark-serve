@@ -53,6 +53,7 @@ and anyone can send anything -- so the server no longer offers that knob;
 
 from __future__ import annotations
 
+import hashlib
 import math
 import os
 import re
@@ -91,26 +92,28 @@ _loaded_from: str | None = None
 # (0 * delta is added), so a client that asks for the original gets it even
 # while another sequence in the same batch is abliterated.
 #
-# The prefix cache is the default model's alone (2026-11-27). A request that
-# runs at a scale other than the startup default READS the shared cache but
-# never WRITES to it -- neither GPU prefix-cache blocks (kv_cache_manager.py)
-# nor the NVMe offload (kvconn/scheduler.py, max_offload_tokens=0). Before this,
-# the KV an ab_scale=1 request computed went into the shared cache under the
-# same hash, and any later request with that prefix reused it: measured live
-# with tools/bi/ab_cache_leak_probe.py, an ab=0 request reusing an ab=1-primed
-# prefix diverged from its fresh computation at the FIRST token, while ab=0
-# reusing ab=0 was bit-identical. Every cm2 user shares the system prompt, so
-# one ab=1 request landing first after a restart or eviction abliterated that
-# prefix for everyone, and the NVMe tier kept it across restarts. It also
-# leaked inside one conversation: /ab auto's ab=0 follow-ups reused the KV of
-# what the turn's ab=1 request had prefilled.
+# KV identity is (tokens, scale) (2026-11-27). KV computed at a scale other than
+# the startup default is cached under a TAGGED key -- tag_hash() of the chain
+# hash, per scale -- in the GPU prefix cache (overlay block_pool.py) and in the
+# NVMe offload (kvconn/scheduler.py). A default request looks up untagged keys
+# only, so it can never be served abliterated KV. A request at scale s looks up
+# per block: the s-tagged key first, then the untagged one -- it reuses its own
+# namespace AND the shared default prefix.
 #
-# Salting the hash with the scale (the earlier idea) separates them too, but
-# it cannot read the default cache either, so every scale change re-prefills
-# the whole conversation (15.66s cold vs 0.89s warm on 21,294 tokens). Read-
-# only costs far less: the ab request reuses the shared prefix like anyone
-# else, and the next default request recomputes only what the ab request
-# added on top of it.
+# Why: the earlier shared cache let an ab=1 request's KV be reused by ab=0
+# requests (measured live, tools/bi/ab_cache_leak_probe.py: diverged at the
+# first token; cm2 users share the system prompt, and the NVMe tier kept it
+# across restarts). The first fix -- ab requests read but never write -- closed
+# the leak but left /ab on with no cache at all (three identical ab=1 requests:
+# 14.2s each). Salting the chain hash by scale (vLLM's LoRA-style namespace)
+# keeps /ab on cached but cannot read the default prefix, so /ab auto's first
+# request would re-prefill everything since the previous ab request. The tag
+# sits OUTSIDE the chain (the chain hash is still tokens-only), so an s-tagged
+# block may follow untagged ones: default prefix + ab tail, which is exactly
+# what /ab auto produces.
+#
+# What an ab request may see is only its own namespace or the default one;
+# mixing the two is the ab user's own dilution and never reaches anyone else.
 
 _scale_vec: torch.Tensor | None = None
 _scale_stage: torch.Tensor | None = None
@@ -240,7 +243,7 @@ def _valid(raw) -> bool:
     """An ``ab_scale`` the server honours: a real, finite number in [0, 1].
 
     int or float, not bool. Shared by ``note_request`` (what the forward pass
-    uses) and ``may_write_cache`` (what the cache may keep), so the two can
+    uses) and ``cache_namespace`` (where its KV is cached), so the two can
     never disagree about which scale a request actually runs at.
     """
     return (
@@ -251,24 +254,39 @@ def _valid(raw) -> bool:
     )
 
 
-def may_write_cache(sampling_params) -> bool:
-    """Whether a request's KV may enter the shared prefix cache / NVMe tier.
+def cache_namespace(sampling_params) -> str | None:
+    """The prefix-cache namespace a request's KV belongs to.
 
-    Only a request that runs at the startup default may write. One that runs
-    at another scale reads the cache like everyone else but keeps what it
-    computes to itself -- see the block above ``_scale_vec``. Judged exactly
-    as ``note_request`` judges it: a missing or refused ``ab_scale`` runs at
-    the default and therefore may write.
+    ``None`` is the default model's (untagged keys). Otherwise the scale the
+    request runs at, as a stable string: its KV is cached under
+    ``tag_hash(h, ns)`` and it reads that namespace before the default one.
+    Judged exactly as ``note_request`` judges it -- a missing or refused
+    ``ab_scale`` runs at the default and belongs to the default namespace.
     """
     if not enabled():
-        return True
+        return None
     extra = getattr(sampling_params, "extra_args", None)
     if not isinstance(extra, dict) or "ab_scale" not in extra:
-        return True
+        return None
     raw = extra.get("ab_scale")
     if not _valid(raw):
-        return True
-    return float(raw) == _default_scale
+        return None
+    scale = float(raw)
+    if scale == _default_scale:
+        return None
+    return repr(scale)
+
+
+def tag_hash(block_hash: bytes, ns: str) -> bytes:
+    """Key-space hash for KV computed at scale ``ns``.
+
+    Deterministic (no process seed beyond the chain hash itself) so the NVMe
+    tier finds it again after a restart; same length as the chain hash so
+    every consumer that slices keys by length keeps working.
+    """
+    return hashlib.sha256(
+        b"glm53-ab\0" + ns.encode() + b"\0" + bytes(block_hash)
+    ).digest()[: len(block_hash)]
 
 
 def note_request(req_id: str, sampling_params) -> None:

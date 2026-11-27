@@ -61,10 +61,38 @@ from vllm.v1.request import Request, RequestStatus
 
 logger = init_logger(__name__)
 
-try:  # LANE PATCH (2026-11-27): see RequestOffloadState.__post_init__
+# LANE PATCH (2026-11-27): KV identity is (tokens, /ab scale). See ab_switch.py
+# (the block above ``_scale_vec``) and overlay/v1core/block_pool.py. KV computed
+# at a non-default scale is stored under keys made from
+# ab_switch.tag_hash(chain_hash, ns). A default request uses untagged keys only.
+# A non-default request looks up, per chunk / boundary key, its own tagged key
+# first and the untagged one second; whichever answered is the key it loads
+# and touches. It always STORES under its own tagged keys, and never re-stores
+# the prefix it hit, so default-namespace KV is never copied under a tag and
+# abliterated KV can never land under an untagged key.
+try:
     import ab_switch as _ab_switch
 except Exception:  # pragma: no cover - lane without the /ab overlay
     _ab_switch = None
+
+_OWN_NAMESPACE = object()
+
+
+def _request_namespace(request: Request) -> str | None:
+    if _ab_switch is None:
+        return None
+    sampling_params = getattr(request, "sampling_params", None)
+    if sampling_params is None:
+        return None
+    return _ab_switch.cache_namespace(sampling_params)
+
+
+def _chunk_keys(group_state: "RequestGroupState", start: int, end: int | None = None):
+    """``offload_keys[start:end]`` with lookup-resolved (default) keys swapped in."""
+    keys = group_state.offload_keys[start:end]
+    if not group_state.resolved:
+        return keys
+    return [group_state.resolved.get(start + i, key) for i, key in enumerate(keys)]
 
 KV_LOAD_TIERS_KEY = "kv_load_tiers"
 MATCHER_MEDIUM_KEY = "medium"
@@ -449,6 +477,10 @@ class SchedulerOffloadConfig(NamedTuple):
 @dataclass
 class RequestGroupState:
     offload_keys: list[OffloadKey] = field(default_factory=list)
+    # LANE PATCH (/ab namespace): for a non-default request, the untagged key of
+    # each chunk (lookup fallback) and the chunks a lookup answered from it.
+    fallback_keys: list[OffloadKey] = field(default_factory=list)
+    resolved: dict[int, OffloadKey] = field(default_factory=dict)
     block_ids: list[int] = field(default_factory=list)
     # Index of the next chunk to offload.
     next_stored_chunk_idx: int = 0
@@ -468,6 +500,10 @@ class RequestOffloadState:
     max_offload_tokens: int | None = None
     # number of hits in the GPU cache
     num_locally_computed_tokens: int = 0
+    # LANE PATCH: /ab namespace (None = default) and the boundary keys a lookup
+    # answered from the default namespace, keyed by (group_idx, boundary).
+    namespace: str | None = None
+    boundary_resolved: dict = field(default_factory=dict)
     # In-flight job IDs. Per the connector's invariant, at any given time
     # this contains either a single load job, or one or more store jobs.
     transfer_jobs: set[int] = field(default_factory=set)
@@ -484,6 +520,7 @@ class RequestOffloadState:
         self.group_states = tuple(
             RequestGroupState() for _ in self.config.kv_group_configs
         )
+        self.namespace = _request_namespace(self.req)
         params = self.req.kv_transfer_params
 
         # NOTE: This field is experimental and subject to change in the future.
@@ -499,13 +536,6 @@ class RequestOffloadState:
             logger.warning(
                 "max_offload_tokens must be a non-negative int, got %r; ignoring", raw
             )
-        # LANE PATCH (2026-11-27): a request at a non-default /ab scale never
-        # stores to the NVMe tier -- its KV is not the default model's. Loads
-        # are untouched. Mirrors kv_cache_manager._may_write_prefix_cache.
-        if _ab_switch is not None and not _ab_switch.may_write_cache(
-            self.req.sampling_params
-        ):
-            self.max_offload_tokens = 0
 
     def update_offload_keys(self) -> None:
         for group_config, group_state in zip(
@@ -521,9 +551,20 @@ class RequestOffloadState:
                 None,
                 group_config.hashes_per_chunk,
             ):
-                group_state.offload_keys.append(
-                    make_offload_key(req_block_hash, group_config.group_idx)
-                )
+                if self.namespace is None:
+                    group_state.offload_keys.append(
+                        make_offload_key(req_block_hash, group_config.group_idx)
+                    )
+                else:
+                    group_state.offload_keys.append(
+                        make_offload_key(
+                            _ab_switch.tag_hash(req_block_hash, self.namespace),
+                            group_config.group_idx,
+                        )
+                    )
+                    group_state.fallback_keys.append(
+                        make_offload_key(req_block_hash, group_config.group_idx)
+                    )
 
     def update_block_id_groups(
         self, new_block_id_groups: tuple[list[int], ...] | None
@@ -785,6 +826,63 @@ class OffloadingConnectorScheduler:
             num = min(num, req_status.req.num_prompt_tokens)
         return num
 
+    def _lookup_chunk(
+        self,
+        req_context: ReqContext,
+        group_state: RequestGroupState | None,
+        chunk_idx: int,
+        key: OffloadKey,
+    ) -> LookupResult:
+        """LANE PATCH: lookup with the /ab default-namespace fallback.
+
+        ``key`` is the chunk's own (possibly tagged) key. Only a definite MISS
+        falls back -- a RETRY is uncertain and is retried as is. A fallback
+        HIT is recorded in ``group_state.resolved`` so load/touch use the key
+        that actually answered.
+        """
+        result = self.manager.lookup(key, req_context)
+        if group_state is None or chunk_idx >= len(group_state.fallback_keys):
+            return result
+        if result is not LookupResult.MISS:
+            if result in (LookupResult.HIT, LookupResult.HIT_PENDING):
+                group_state.resolved.pop(chunk_idx, None)
+            return result
+        fallback = group_state.fallback_keys[chunk_idx]
+        result = self.manager.lookup(fallback, req_context)
+        if result in (LookupResult.HIT, LookupResult.HIT_PENDING):
+            group_state.resolved[chunk_idx] = fallback
+        return result
+
+    def _boundary_key(
+        self, req_status: RequestOffloadState, group_idx: int, boundary: int
+    ) -> OffloadKey:
+        """LANE PATCH: the boundary key a lookup settled on (own or default)."""
+        resolved = req_status.boundary_resolved.get((group_idx, boundary))
+        if resolved is not None:
+            return resolved
+        return self._make_boundary_key(req_status.req, group_idx, boundary)
+
+    def _lookup_boundary(
+        self, req_status: RequestOffloadState, group_idx: int, boundary: int
+    ) -> tuple[LookupResult, OffloadKey]:
+        """LANE PATCH: boundary-key lookup with the /ab default fallback."""
+        key = self._make_boundary_key(req_status.req, group_idx, boundary)
+        result = self.manager.lookup(key, req_status.req_context)
+        if req_status.namespace is None:
+            return result, key
+        if result is not LookupResult.MISS:
+            if result in (LookupResult.HIT, LookupResult.HIT_PENDING):
+                req_status.boundary_resolved.pop((group_idx, boundary), None)
+            return result, key
+        fallback = self._make_boundary_key(
+            req_status.req, group_idx, boundary, namespace=None
+        )
+        result = self.manager.lookup(fallback, req_status.req_context)
+        if result in (LookupResult.HIT, LookupResult.HIT_PENDING):
+            req_status.boundary_resolved[(group_idx, boundary)] = fallback
+            return result, fallback
+        return result, key
+
     def _maximal_prefix_lookup(
         self,
         keys: Iterable[OffloadKey],
@@ -792,13 +890,16 @@ class OffloadingConnectorScheduler:
         req: Request,
         group_config: GroupOffloadConfig,
         start_chunk_idx: int,
+        group_state: RequestGroupState | None = None,
     ) -> int | None:
         """Return the number of consecutive offloaded chunks from the start,
         or None if the backend deferred a lookup."""
         hit_count = 0
         defer_lookup = False
         for local_idx, key in enumerate(keys):
-            result = self.manager.lookup(key, req_context)
+            result = self._lookup_chunk(
+                req_context, group_state, start_chunk_idx + local_idx, key
+            )
             match result:
                 case LookupResult.HIT:
                     self._events_tracker.record_lookup(
@@ -824,6 +925,8 @@ class OffloadingConnectorScheduler:
         keys: Sequence[OffloadKey],
         sliding_window_size: int,
         req_context: ReqContext,
+        group_state: RequestGroupState | None = None,
+        start_chunk_idx: int = 0,
     ) -> int | None:
         """Return the end index (in `keys`) of the last run of
         `sliding_window_size` consecutive hits, scanning from the end.
@@ -831,7 +934,9 @@ class OffloadingConnectorScheduler:
         defer_lookup = False
         consecutive_hits = 0
         for idx in range(len(keys) - 1, -1, -1):
-            match self.manager.lookup(keys[idx], req_context):
+            match self._lookup_chunk(
+                req_context, group_state, start_chunk_idx + idx, keys[idx]
+            ):
                 case LookupResult.HIT:
                     consecutive_hits += 1
                 case LookupResult.HIT_PENDING:
@@ -857,7 +962,7 @@ class OffloadingConnectorScheduler:
             self.config.kv_group_configs, req_status.group_states
         ):
             if group_config.sliding_window_size_in_chunks is None:
-                self.manager.touch(group_state.offload_keys, req_status.req_context)
+                self.manager.touch(_chunk_keys(group_state, 0), req_status.req_context)
             else:
                 # Keep only chunks needed to hit the original request, plus
                 # decoded chunks.
@@ -867,14 +972,14 @@ class OffloadingConnectorScheduler:
                     - group_config.sliding_window_size_in_chunks,
                 )
                 self.manager.touch(
-                    group_state.offload_keys[chunks_to_skip:],
+                    _chunk_keys(group_state, chunks_to_skip),
                     req_status.req_context,
                 )
         if req_status.partial_tail_boundary is not None:
             self.manager.touch(
                 tuple(
-                    self._make_boundary_key(
-                        req_status.req,
+                    self._boundary_key(
+                        req_status,
                         group.group_idx,
                         req_status.partial_tail_boundary,
                     )
@@ -968,6 +1073,7 @@ class OffloadingConnectorScheduler:
                         req_status.req,
                         group_config,
                         start_chunk_idx,
+                        group_state,
                     )
                 else:
                     required_window = sliding_window_size_in_chunks
@@ -977,6 +1083,8 @@ class OffloadingConnectorScheduler:
                         offload_keys,
                         required_window,
                         req_status.req_context,
+                        group_state,
+                        start_chunk_idx,
                     )
                 if num_hit_chunks == 0:
                     return 0
@@ -1030,12 +1138,11 @@ class OffloadingConnectorScheduler:
                 sliding_window_size_in_chunks = (
                     group_config.sliding_window_size_in_chunks
                 )
-                offload_keys = group_state.offload_keys
                 num_chunks = cdiv(
                     num_computed_tokens + num_hit_tokens, tokens_per_chunk
                 )
                 start_chunk_idx = num_computed_tokens // tokens_per_chunk
-                offload_keys = offload_keys[start_chunk_idx:num_chunks]
+                offload_keys = _chunk_keys(group_state, start_chunk_idx, num_chunks)
                 if sliding_window_size_in_chunks is not None:
                     offload_keys = offload_keys[-sliding_window_size_in_chunks:]
                 if any(key in self._chunks_being_loaded for key in offload_keys):
@@ -1057,10 +1164,19 @@ class OffloadingConnectorScheduler:
         return num_hit_tokens
 
     def _make_boundary_key(
-        self, request: Request, group_idx: int, boundary_tokens: int
+        self,
+        request: Request,
+        group_idx: int,
+        boundary_tokens: int,
+        namespace=_OWN_NAMESPACE,
     ) -> OffloadKey:
         hash_idx = boundary_tokens // self.config.tokens_per_hash - 1
-        return make_offload_key(request.block_hashes[hash_idx], group_idx)
+        block_hash = request.block_hashes[hash_idx]
+        # LANE PATCH: the request's own /ab namespace unless told otherwise.
+        ns = _request_namespace(request) if namespace is _OWN_NAMESPACE else namespace
+        if ns is not None:
+            block_hash = _ab_switch.tag_hash(block_hash, ns)
+        return make_offload_key(block_hash, group_idx)
 
     def _finished_replay_tail_boundary(self, request: Request) -> int | None:
         """Return the largest stable replay boundary for a finished request.
@@ -1144,12 +1260,12 @@ class OffloadingConnectorScheduler:
             ):
                 tokens_per_chunk = group_config.tokens_per_chunk
                 end_chunk_idx = boundary // tokens_per_chunk
+                # LANE PATCH (/ab namespace): entries are looked up through
+                # _lookup_boundary / _lookup_chunk so a non-default request
+                # falls back to the default namespace key by key.
+                entries: list[tuple] = []
                 if boundary % tokens_per_chunk:
-                    keys = [
-                        self._make_boundary_key(
-                            req_status.req, group_config.group_idx, boundary
-                        )
-                    ]
+                    entries.append(("boundary", boundary))
                 elif group_config.sliding_window_size_in_chunks is None:
                     # A full-attention group must be contiguous from the
                     # already-qualified complete hit through the finer replay
@@ -1160,6 +1276,9 @@ class OffloadingConnectorScheduler:
                     if len(keys) != end_chunk_idx - start_chunk_idx:
                         boundary_missed = True
                         break
+                    entries.extend(
+                        ("chunk", start_chunk_idx + i, key) for i, key in enumerate(keys)
+                    )
                 else:
                     # Windowed attention and recurrent state need only their
                     # terminal window at the selected replay boundary.
@@ -1169,16 +1288,22 @@ class OffloadingConnectorScheduler:
                     if len(keys) != end_chunk_idx - start_chunk_idx:
                         boundary_missed = True
                         break
-                if group_config.is_eagle_group:
-                    keys.append(
-                        self._make_boundary_key(
-                            req_status.req,
-                            group_config.group_idx,
-                            boundary + group_config.tokens_per_chunk,
-                        )
+                    entries.extend(
+                        ("chunk", start_chunk_idx + i, key) for i, key in enumerate(keys)
                     )
-                for key in keys:
-                    result = self.manager.lookup(key, req_status.req_context)
+                if group_config.is_eagle_group:
+                    entries.append(
+                        ("boundary", boundary + group_config.tokens_per_chunk)
+                    )
+                for entry in entries:
+                    if entry[0] == "boundary":
+                        result, _ = self._lookup_boundary(
+                            req_status, group_config.group_idx, entry[1]
+                        )
+                    else:
+                        result = self._lookup_chunk(
+                            req_status.req_context, group_state, entry[1], entry[2]
+                        )
                     if result is LookupResult.MISS:
                         boundary_missed = True
                         break
@@ -1190,8 +1315,8 @@ class OffloadingConnectorScheduler:
             pending |= boundary_pending
             if not boundary_missed and not boundary_pending:
                 for group_config in self.config.kv_group_configs:
-                    key = self._make_boundary_key(
-                        req_status.req, group_config.group_idx, boundary
+                    key = self._boundary_key(
+                        req_status, group_config.group_idx, boundary
                     )
                     self._events_tracker.record_partial_lookup(
                         req_status.req, group_config, boundary, key
@@ -1231,11 +1356,10 @@ class OffloadingConnectorScheduler:
             boundary_missed = False
             boundary_keys = []
             for group_config in self.config.kv_group_configs:
-                key = self._make_boundary_key(
-                    req_status.req, group_config.group_idx, boundary
+                result, key = self._lookup_boundary(
+                    req_status, group_config.group_idx, boundary
                 )
                 boundary_keys.append(key)
-                result = self.manager.lookup(key, req_status.req_context)
                 if result is LookupResult.MISS:
                     boundary_missed = True
                     break
@@ -1430,6 +1554,18 @@ class OffloadingConnectorScheduler:
             else:
                 self._maybe_observe_lookup_async_delay(req_status)
         req_status.update_num_hit_chunks(num_computed_tokens + (num_hit_tokens or 0))
+        if req_status.namespace is not None:
+            # LANE PATCH (/ab namespace): the hit prefix may be default-namespace
+            # KV; storing it again under this request's tag would only copy it.
+            # Store from where this request starts computing.
+            hit_tokens = num_computed_tokens + (num_hit_tokens or 0)
+            for group_config, group_state in zip(
+                self.config.kv_group_configs, req_status.group_states
+            ):
+                group_state.next_stored_chunk_idx = max(
+                    group_state.next_stored_chunk_idx,
+                    hit_tokens // group_config.tokens_per_chunk,
+                )
 
         self._touch(req_status)
 
@@ -1501,11 +1637,13 @@ class OffloadingConnectorScheduler:
                 )
                 end_chunk_idx = num_chunks - (partial_tail_boundary is not None)
                 assert len(offload_keys) >= end_chunk_idx
-                keys_to_load.extend(offload_keys[start_chunk_idx:end_chunk_idx])
+                keys_to_load.extend(
+                    _chunk_keys(group_state, start_chunk_idx, end_chunk_idx)
+                )
                 if partial_tail_boundary is not None:
                     keys_to_load.append(
-                        self._make_boundary_key(
-                            request, group_config.group_idx, partial_tail_boundary
+                        self._boundary_key(
+                            req_status, group_config.group_idx, partial_tail_boundary
                         )
                     )
 
@@ -1616,11 +1754,6 @@ class OffloadingConnectorScheduler:
             assert len(boundaries) == 1
             boundary = boundaries.pop()
             req = req_status.req
-            if req_status.max_offload_tokens == 0:
-                # LANE PATCH (2026-11-27): nothing of this request may be
-                # stored (non-default /ab scale). `or` below would read 0 as
-                # "no cap" and store the tail anyway.
-                continue
             max_boundary = min(
                 req.num_prompt_tokens,
                 req_status.max_offload_tokens or req.num_prompt_tokens,

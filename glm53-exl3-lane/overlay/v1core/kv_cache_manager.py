@@ -28,21 +28,21 @@ from vllm.v1.kv_cache_interface import (
 from vllm.v1.metrics.stats import PrefixCacheStats
 from vllm.v1.request import Request, RequestStatus
 
-# LANE PATCH (2026-11-27): the prefix cache belongs to the default model.
-# A request running at a non-default /ab scale reads the cache but never writes
-# it, so its abliterated KV cannot be reused by anyone else. See ab_switch.py,
-# the block above ``_scale_vec``.
+# LANE PATCH (2026-11-27): /ab namespace of a request (None = default). See
+# ab_switch.py, the block above ``_scale_vec``, and block_pool.py.
 try:
     import ab_switch as _ab_switch
 except Exception:  # pragma: no cover - lane without the /ab overlay
     _ab_switch = None
 
 
-def _may_write_prefix_cache(request: Request) -> bool:
+def _request_namespace(request: Request) -> str | None:
     if _ab_switch is None:
-        return True
-    sampling_params = request.sampling_params
-    return sampling_params is None or _ab_switch.may_write_cache(sampling_params)
+        return None
+    sampling_params = getattr(request, "sampling_params", None)
+    if sampling_params is None:
+        return None
+    return _ab_switch.cache_namespace(sampling_params)
 
 logger = init_logger(__name__)
 
@@ -295,11 +295,19 @@ class KVCacheManager:
         max_cache_hit_length = max(
             request.num_tokens - 1 - self.draft_replay_reserve, 0
         )
-        computed_blocks, num_new_computed_tokens, num_uncached = (
-            self.coordinator.find_longest_cache_hit(
-                request.block_hashes, max_cache_hit_length
+        # LANE PATCH (2026-11-27): a request at a non-default /ab scale looks
+        # up its own namespace first, then the default one (block_pool.py,
+        # ab_switch.py). Every prefix lookup passes through here, so the
+        # namespace is scoped to exactly this call.
+        self.block_pool.lookup_namespace = _request_namespace(request)
+        try:
+            computed_blocks, num_new_computed_tokens, num_uncached = (
+                self.coordinator.find_longest_cache_hit(
+                    request.block_hashes, max_cache_hit_length
+                )
             )
-        )
+        finally:
+            self.block_pool.lookup_namespace = None
 
         # When kv_cache_report_mode is "full", emit BlockStored events
         # for the reused prefix cache blocks so that external consumers
@@ -586,11 +594,7 @@ class KVCacheManager:
 
         # P/D: delay caching blocks if we have to recv from
         # remote. Update state for locally cached blocks.
-        if (
-            not self.enable_caching
-            or delay_cache_blocks
-            or not _may_write_prefix_cache(request)
-        ):
+        if not self.enable_caching or delay_cache_blocks:
             return self.create_kv_cache_blocks(new_blocks)
 
         # NOTE(woosuk): We want to commit (cache) up to num_local_computed_tokens
@@ -811,7 +815,7 @@ class KVCacheManager:
             num_computed_tokens: The number of computed tokens, including tokens
                 that are already cached and tokens to be cached.
         """
-        if self.enable_caching and _may_write_prefix_cache(request):
+        if self.enable_caching:
             self.coordinator.cache_blocks(request, num_computed_tokens)
 
     def create_kv_cache_blocks(

@@ -31,20 +31,36 @@ Clients are not trusted. codemason is public under MIT, so anyone can send anyth
   The old `min(max(v,0),1)` let NaN through unchanged so NaN entered the forward pass, and while that request was
   being tracked, `GET /ab` returned 500 due to a JSON serialization error.
 - Verification: `tools/test_ab_zero_trust.py` (confirmed 18 failures on the code before the fix), `tools/test_ab_per_request.py`.
-- **The prefix cache belongs to the default model** (2026-11-27). A request running at a scale other than the
-  startup default **reads the cache but never writes it** — neither GPU prefix-cache blocks nor the NVMe offload.
-  Before this, the KV an ab=1 request computed went into the shared cache under the same hash, and an ab=0 request
-  sending the same prefix reused it. Measured live (`tools/bi/ab_cache_leak_probe.py`): the reused result diverged
-  from a fresh computation **at the first token** (ab=0→ab=0 reuse was bit-identical). cm2 users share the system
-  prompt, so one ab=1 request could contaminate everyone's prefix, and the NVMe tier kept it across restarts. Within
-  one conversation, too, `/ab auto`'s ab=0 follow-ups carried on from the first request's KV.
-  After the fix the same probe passes. Cost: the default request after an ab request re-prefills only the tail the
-  ab request computed (the ab request itself still reads the shared prefix — measured 14.5s → 2.0s).
-  Salting by scale is not used: it cannot read the default cache, so every turn would re-prefill the whole conversation.
-  One predicate decides, `ab_switch.may_write_cache()`, using the same validation (`_valid`) as `note_request`.
-  Gates: `overlay/v1core/kv_cache_manager.py` (allocate_slots, cache_blocks),
-  `overlay/kvconn/scheduler.py` (max_offload_tokens=0, partial tail skipped).
-  Test: `tools/test_ab_cache_write.py` (confirmed 3 failures on the files before the fix).
+- **KV identity = (tokens, scale) — a prefix-cache namespace per scale** (2026-11-27).
+  The chain hash stays tokens-only; KV **computed** at a non-default scale is registered under
+  `tag_hash(chain_hash, scale)` (GPU prefix cache and NVMe alike). A default request looks up untagged keys
+  only, so it can **never** be served ab KV. An ab request looks up, per block/chunk, its own namespace first
+  and the default one second. The tag sits outside the chain, so "default prefix + ab tail" links up →
+  both `/ab on` and `/ab auto` stay cached.
+  - Why: before, ab=1 KV went into the shared cache under the same hash, and an ab=0 request reusing that prefix
+    diverged **at the first token** (`tools/bi/ab_cache_leak_probe.py`). cm2 users share the system prompt, so one
+    ab=1 request could contaminate everyone, and the NVMe tier kept it across restarts. The first fix ("ab requests
+    read only") closed the leak but left `/ab on` with no cache at all (three ab=1 requests on one prefix: 14.2s each).
+    Salting the chain by scale (LoRA-style) would stop `/ab auto`'s first request reading the default prefix — hence
+    the tag outside the chain.
+  - NVMe: stores always use the request's own tagged keys, and the hit range is never re-stored (default KV is not
+    copied under a tag). Lookups, inside the contiguous hit range, try own → default per chunk and boundary key; a
+    fallback hit is recorded and that key is used for load and touch. There is structurally no path that stores ab
+    KV under an untagged key.
+  - Measured (`tools/bi/ab_cache_namespace_probe.py`, all PASS, including a real RESTARTALL):
+
+    | Case | Result |
+    |---|---|
+    | ab=0 reusing a prefix first prefilled by ab=1 | bit-identical to a fresh computation (no leak) |
+    | `/ab on`: three ab=1 requests on one prefix | 14.8 → 2.4 → 2.5s |
+    | `/ab auto` turn 2 ab=1 / following ab=0 (22.7K, fresh 18.7s) | 7.1s / 7.2s, ab=0 bit-identical to fresh |
+    | After restart, NVMe: ab=1 turn 2 / ab=0 turn 2 (24.3K, fresh 19.9s) | **6.2s** (default + own chunks) / 12.9s (default chunks only, bit-identical to fresh) |
+    | After restart, NVMe: `/ab on` chain (no default key exists) | 8.2s (fresh 14.8s), output bit-identical to a fresh ab=1 computation |
+    | Decode t/s (kmeas) | 35.0 / 39.1 / 44.9 — unchanged |
+  - One predicate: `ab_switch.cache_namespace()` (same `_valid` as `note_request`). Entry: `KVCacheManager.get_computed_blocks`
+    (the single entry of every lookup; `block_pool.lookup_namespace` is set only for that call); registration:
+    `block_pool.cache_full_blocks` / `cache_partial_block`.
+  - Test: `tools/test_ab_cache_namespace.py` (confirmed leak / no-namespace / no-fallback failures on the original files).
 
 ## Why this design
 
@@ -84,7 +100,9 @@ concentrated here. However, **hallucination is spread across all 45 layers**, so
 | `overlay/mla.py` | Hook for the 11 sparse MLA layers (the `o_proj` exit at `mla.py:405`) |
 | `overlay/glm5next/kda.py` | Hook for the 34 KDA layers (`kda.py:344`) |
 | `overlay/ab_plugin/` | `GET /ab` (read-only) + worker query (`collective_rpc`). `POST /ab` returns 410 |
-| `overlay/v1core/kv_cache_manager.py` | Requests at a non-default scale do not write the prefix cache (they still read it) |
+| `overlay/v1core/block_pool.py` | Per-scale cache keys (tags); an ab request looks up own → default |
+| `overlay/v1core/kv_cache_manager.py` | Sets the request's namespace for exactly one lookup |
+| `overlay/kvconn/scheduler.py` | Same rule for NVMe keys (store = own tag, lookup = own → default) |
 
 The plugin uses vLLM's official extension points. It does not modify server code. Because of TP, the scale has to reach every
 worker, so it is split into two halves — `vllm.general_plugins` installs the worker RPC and

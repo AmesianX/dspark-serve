@@ -1,0 +1,96 @@
+--- v1core/block_pool.py.orig	2026-11-27 19:38:23.890057221 +0900
++++ v1core/block_pool.py	2026-11-27 19:38:36.321616444 +0900
+@@ -27,6 +27,30 @@
+ )
+ from vllm.v1.request import Request
+ 
++# LANE PATCH (2026-11-27): KV identity is (tokens, /ab scale). See ab_switch.py,
++# the block above ``_scale_vec``. Blocks computed at a non-default scale are
++# keyed with ab_switch.tag_hash(chain_hash, ns); lookups for such a request try
++# its namespace first, then the default one. Default requests never see tags.
++try:
++    import ab_switch as _ab_switch
++except Exception:  # pragma: no cover - lane without the /ab overlay
++    _ab_switch = None
++
++
++def _request_namespace(request: Request) -> str | None:
++    if _ab_switch is None:
++        return None
++    sampling_params = getattr(request, "sampling_params", None)
++    if sampling_params is None:
++        return None
++    return _ab_switch.cache_namespace(sampling_params)
++
++
++def _keyed(block_hash: BlockHash, ns: str | None) -> BlockHash:
++    if ns is None:
++        return block_hash
++    return BlockHash(_ab_switch.tag_hash(block_hash, ns))
++
+ logger = init_logger(__name__)
+ 
+ 
+@@ -195,6 +219,11 @@
+ 
+         self.metrics_collector = metrics_collector
+ 
++        # LANE PATCH (2026-11-27): /ab namespace of the request whose prefix
++        # is being looked up. Set only around KVCacheManager.get_computed_blocks
++        # (the single entry point of every prefix lookup); None = default only.
++        self.lookup_namespace: str | None = None
++
+     def get_cached_block(
+         self, block_hash: BlockHash, kv_cache_group_ids: list[int]
+     ) -> list[KVCacheBlock] | None:
+@@ -209,6 +238,19 @@
+         Returns:
+             The cached blocks if exists, or None.
+         """
++        if self.lookup_namespace is not None:
++            # A non-default request: its own namespace first, all groups from
++            # the same namespace; otherwise fall back to the default one.
++            tagged = self._get_cached_block_keyed(
++                _keyed(block_hash, self.lookup_namespace), kv_cache_group_ids
++            )
++            if tagged is not None:
++                return tagged
++        return self._get_cached_block_keyed(block_hash, kv_cache_group_ids)
++
++    def _get_cached_block_keyed(
++        self, block_hash: BlockHash, kv_cache_group_ids: list[int]
++    ) -> list[KVCacheBlock] | None:
+         cached_blocks = []
+         for group_id in kv_cache_group_ids:
+             block_hash_with_group_id = make_block_hash_with_group_id(
+@@ -265,6 +307,9 @@
+         )
+ 
+         new_block_hashes = block_hashes[num_cached_blocks:]
++        # LANE PATCH: KV computed at a non-default /ab scale gets that
++        # namespace's key, so no default request can ever be served it.
++        ns = _request_namespace(request)
+         new_hashes: list[ExternalBlockHash] | None = (
+             [] if self.enable_kv_cache_events else None
+         )
+@@ -274,7 +319,7 @@
+             # in align mode. We skip null blocks here.
+             if blk.is_null or (block_mask is not None and not block_mask[i]):
+                 continue
+-            block_hash = new_block_hashes[i]
++            block_hash = _keyed(new_block_hashes[i], ns)
+             num_hash_tokens = (num_cached_blocks + i + 1) * block_size
+ 
+             # Update and added the full block to the cache.
+@@ -489,7 +534,10 @@
+         assert block_size > self.hash_block_size
+         assert block_size % self.hash_block_size == 0
+         assert num_tokens % block_size != 0
+-        block_hash = self._get_partial_block_hash(request, num_tokens)
++        block_hash = _keyed(
++            self._get_partial_block_hash(request, num_tokens),
++            _request_namespace(request),
++        )
+         num_hash_blocks = num_tokens // self.hash_block_size
+         block_hash_with_group_id = make_block_hash_with_group_id(
+             block_hash, kv_cache_group_id
