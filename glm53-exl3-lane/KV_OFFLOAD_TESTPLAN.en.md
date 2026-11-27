@@ -109,16 +109,17 @@ This must pass first for the concurrent tests to mean anything. Our kernel solut
 ## 6. Final light verification F1~F6 (2026-11-27, production settings, all pass)
 
 `tools/kvtest/final_light.py before|after`, `tools/bi/ab_cache_namespace_probe.py live|restart`, cm2 multi-session (through the gateway), `tools/kmeas.py`.
-The prompt is 18K — above that there is a determinism gap unrelated to the cache (BATCH_INVARIANCE.en.md §6-c), kept out of the cache verdict.
+F1/F2/F5 use a **44.7K** prompt. ⚠️ At first a failure at 40K was "passed" by shrinking the test to 18K — that failure was the decode
+indexer top-k bug (BATCH_INVARIANCE.en.md §6-c). The results below are the rerun at 44.7K after the fix. F3/F4 are /ab and session tests on an 18K prompt.
 
 | | What | Result |
 |---|---|---|
-| F1 | 19.9K cold → same request | 15.37s → 1.17s, output bit-identical, decode 53.6 t/s |
+| F1 | 44.7K cold → same request | 33.37s → 1.08s, output bit-identical, decode 58.3 t/s |
 | F2 | same request + 1 decode + 1 cold prefill concurrently | bit-identical |
 | F3 | `/ab` namespaces: leak / `on` / `auto` | no leak, `on` 14.9→2.5s, `auto` reuses the prefix 7.5s (fresh 19.7) |
 | F3' | after restart, NVMe: ab=1 / ab=0 / `on` chain | 6.3s (default + own chunks) / 13.0s (bit-identical, no leak) / 8.4s (bit-identical) |
 | F4 | sessions A·B·C (cm2→gateway→vLLM) | public prefix 9,216 shared (incl. NVMe), same session 17,920, others' private part 0 |
-| F5 | F1 request after RESTARTALL | NVMe 6.12s (cold 15.37), bit-identical to before the restart |
+| F5 | F1 request after RESTARTALL | (18K, before the fix) NVMe 6.12s (cold 15.37), bit-identical to before the restart. 44.7K rerun at the next restart |
 | F6 | kmeas | 34.6 / 39.2 / 44.8 t/s (unchanged) |
 
 ## 5. What to add when moving to a different configuration (recommended)

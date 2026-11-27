@@ -4,6 +4,14 @@
 
 Chronological record. Numbers are measurements at the time; hashes are `AmesianX/dspark-serve` commits. Details are in README §5 (experiment records), HANDOFF, and memory notes.
 
+## 11-27 (night) — long-context decode indexer top-k bug fixed (correctness)
+- Above 18K tokens two temperature-0 cold runs diverged at token 4–9 → traced to the decode top-k picking a wrong pool set (up to ~80 of
+  512) for MTP verify rows, and the canonicalisation kernel trusting its minimum and overwriting the next row. Fix: verify the threshold,
+  exact K-th bisection only for failing rows, bounded writes, −inf past each row's length. 18K/38K/78K cold ×3 bit-identical, all 840
+  selections correct, kmeas unchanged. Details in BATCH_INVARIANCE.en.md §6-c.
+- ⚠️ At first this failure was hidden by shrinking the test to 18K (the user: "ignoring above 18K was a fatal mistake"). The final
+  verification was rerun at 44.7K.
+
 ## 11-27 (evening) — `/ab` cache namespaces · per-session cache isolation + shared public prefix · cold-prefill readout
 - **`/ab` leak closed**: an ab=0 request reusing ab=1 KV diverged at the first token (measured) → KV identity = (tokens, scale). KV computed under ab
   gets tagged keys; original requests read untagged keys only; ab requests read own → original (GPU `block_pool` overlay + NVMe kvconn). The first

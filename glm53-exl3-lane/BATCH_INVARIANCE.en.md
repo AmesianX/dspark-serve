@@ -165,20 +165,45 @@ This does not contradict stage 2 (17K prompt, 4608-aligned chunks) passing co-pr
 being prefilled together in one step was never tested. Reproduce: `tools/bi/ab_iso_probe.py diff`, `plain3`.
 Cause not investigated (candidates: KDA chunk boundaries when there are several short varlen prefill rows, or the MLA/indexer prefill path).
 
-## 6-c. ⚠️ Gap: cold reproducibility of prompts longer than 18,432 tokens (found 2026-11-27, unresolved)
+## 6-c. ✅ Fixed: the indexer top-k picking the wrong context in long-context decode (found and fixed 2026-11-27)
 
-Found during the final cache verification. **Unrelated to the cache** — the same prompt sent with two different salts (= both cold), sequentially,
-still diverges. No concurrent requests.
+**Symptom.** Above 18K tokens, two temperature-0 cold runs (no concurrent requests, cache irrelevant) diverged at token 4–9.
+22.7K identical; 38K, 40K, 41K diverged. Found during the 11-27 final verification — and at first hidden by shrinking the test to 18K
+(a mistake; see the lesson below).
 
-| Prompt | cold vs cold |
-|---|---|
-| 18,640 | bit-identical |
-| 40,164 | diverges at token 8 (|Δlp| 3.4e-4), text differs too |
-| 41,764 | diverges at token 4 (|Δlp| 2.8e-5) — two cache hits diverge at the same place too |
+**Trace (turn things off → position → row → kernel).**
+1. Batch invariance OFF / NVMe offload OFF (connector and salt code included) / `/ab` hooks OFF / the new cache overlays (block_pool,
+   kv_cache_manager) removed — all four still reproduced it. Unrelated to that day's changes.
+2. `prompt_logprobs` over all 38,264 positions, two runs → **identical**. Prefill is deterministic; the split happens in **decode**.
+3. BI probe (`GLM53_BI_PROBE`, EAGER): the two runs had the same decode steps and even the same MTP draft tokens, yet **rows 1–2 of the
+   first decode step (a 5-row MTP verify) differed in layer 7's attention output** (inputs bit-identical).
+4. Decode indexer input/output dump (diagnostic only, removed afterwards): logits within the valid length identical, but `pool_topk`
+   differed in rows 1–2 and **overlapped the true top-512 in only 432–451/512**. Row 2 was out of order and missing the top-scoring pool (#0, +93.3).
 
-The edge is around the first mamba retention segment (18,432) — when the prefill splits into several chunks. The 11-26 stress test (E1, 82K)
-matched, so the changes since then (11-27 batch-invariant kernel settings, per-request `/ab`, cache-layer overlays) need a bisect. Short prompts
-(2.5K, 18K) are identical both streaming and non-streaming.
+**Cause (two layers).**
+- The fast decode top-k (`persistent_topk`) returns a non-top-512 set for some MTP verify rows (a −130.1 pool against a true cut of
+  −129.8). Columns past the valid length hold stale buffer values (+1…+30) because the logits are produced with `clean_logits=False`.
+- The canonicalisation kernel (`_canonical_topk_kernel`) **trusted that set's minimum as the threshold.** A too-low threshold makes
+  "above threshold" exceed K, and **the writes had no bound, so they overwrote the next row's K slots** — row 2's broken order and
+  missing top pool are that overwrite.
+- Result: in long contexts some rows decoded with **the wrong context (up to ~80 of 512 pools)**, and since the stale bytes differ run
+  to run, output was nondeterministic. It is an answer-quality bug before it is a determinism bug.
+
+**Fix (`overlay/sparse_attn_indexer_kpool.py`).**
+- The canonicalisation kernel **verifies** the threshold: it is the exact K-th value iff `n_above < K ≤ n_above + n_at`. Only rows that
+  fail it find the exact K-th value with a **32-step bisection** over an order-preserving int32 key of the float — unique, hence correct
+  and identical run to run. Rows that pass cost nothing extra.
+- A `pos < K` bound on the writes — no more spilling into the next row.
+- Logits past each row's length are set to −inf before top-k (`_mask_logits_past_row_len_`), on both decode top-k paths.
+
+**Verification.**
+- After the fix: all 840 dumped rows match the true top-512; the two runs are identical in 84/84 step-layers.
+- Production settings (CUDA graphs on): 18K, 38K, 78K cold ×3 bit-identical. 44.7K F1 (hit) and F2 (concurrent) bit-identical
+  (KV_OFFLOAD_TESTPLAN.en.md §6).
+- Speed: kmeas 34.9 / 39.0 / 44.8 t/s (unchanged). 38K-context decode 34.0 t/s (a run alone; not an A/B against the old code).
+
+**Lesson.** Test determinism on **logprobs**, not just output text, and **beyond 18K tokens**. This bug sat between the BI work's
+text-only comparison and verification that never went past 18K. Dropping the failing length from a test hides the defect as a "pass".
 
 ## 7. Remaining work (as of 2026-11-27, items 1~5 all done)
 

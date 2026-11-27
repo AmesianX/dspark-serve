@@ -70,6 +70,7 @@ DGX Spark(GB10) **두 대**를 200GbE 레일로 묶어 **GLM-5.3-Flash**(4bpw EX
 | 기능 | **세션별 캐시 격리 + 공개 접두부 공유** — 게이트(8443)가 세션마다 `cache_salt` 를 강제하고, 레인은 첫 사용자 턴 앞 마지막 system 블록부터 salt 를 건다(§5.8). `/ab` KV 는 scale 별 네임스페이스(§3) | 남의 캐시 재사용·응답시간 엿보기 불가, 도구 스키마·고정 지시문은 전원이 한 캐시 공유(새 세션 9,216 토큰 적중) |
 | 기능 | **NVMe KV 콜드 티어 오프로드** — GPU 에서 밀려난 프리픽스 KV 를 노드당 200GB NVMe 에 보관(O_DIRECT, 슬롯 헤더 무결성 검사, 실패 시 재계산) | 사실상 무한 프리픽스 캐시, **재기동 후에도 캐시 생존**. 상세 [`KV_OFFLOAD.md`](glm53-exl3-lane/KV_OFFLOAD.md) |
 | 정확성 | **동시 배치 불변(temp 0)** — 배치 구성·부하·이력·재기동과 무관하게 같은 출력(`GLM53_BATCH_INVARIANT=1`) | t/s 동일, 프리필 −1.5%. 상세 [`BATCH_INVARIANCE.md`](glm53-exl3-lane/BATCH_INVARIANCE.md) |
+| 정확성 | **긴 문맥 디코드 인덱서 top-k 수정**(2026-11-27) — MTP 검증 행에서 sparse attention 이 볼 문맥 묶음을 최대 ~80/512 잘못 고르고 다음 행까지 덮어쓰던 것을, 기준값 검증·정확한 K번째 탐색·쓰기 경계로 | 18K~78K temp0 콜드 반복 비트 동일, 선택 840행 전부 정답, 속도 불변. 상세 [`BATCH_INVARIANCE.md`](glm53-exl3-lane/BATCH_INVARIANCE.md) §6-c |
 | 운영 | **priority 스케줄링** — codemason 서브에이전트 요청은 priority 1 | 대기열에서 메인 대화가 먼저 |
 | 운영 | 비전 게이트 `VISION`(1=이미지 수용, 라이브 기본. 0 이면 `--language-model-only` 로 타워 제외 — GB10 워밍업 OOM 방지), zai-org 채팅 템플릿 수정 백포트 | 안정 기동 |
 | 운영 | 양 노드 동기화 검사(`sync-lane-67.sh`), 메모리 감시기, 경로·사이트 값 분리 | 2노드 불일치·OOM 사고 예방 |

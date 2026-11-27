@@ -47,11 +47,10 @@ def gen(msgs, n=48, salt=None, stream_ttft=True):
 
 
 def convo(nonce):
-    # ~18K tokens: below the first 18,432-token checkpoint segment, where temp-0
-    # output is bit-stable run to run. Above it a second determinism issue was
-    # found on 2026-11-27 (40K cold vs cold diverge, no cache involved) -- kept
-    # out of this cache check on purpose, tracked separately.
-    rows = "\n".join(f"[{nonce}] 기록 {i}: 서버 점검 결과와 후속 조치 메모." for i in range(650))
+    # ~40K tokens -- deliberately past the 18,432-token checkpoint segment and
+    # the length where the decode top-k bug showed (2026-11-27). This check was
+    # once shrunk to 18K to "pass"; that hid a real bug. Do not shrink it.
+    rows = "\n".join(f"[{nonce}] 기록 {i}: 서버 점검 결과와 후속 조치 메모." for i in range(1500))
     return [{"role": "system", "content": "너는 운영 보조다."},
             {"role": "user", "content": rows + "\n\n위 기록을 세 문장으로 요약해줘."}]
 

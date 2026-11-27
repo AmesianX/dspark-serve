@@ -121,14 +121,15 @@ def _canonical_topk_kernel(
     lrow = logits_ptr + row * logits_s0
     orow = topk_ptr + row * topk_s0
 
-    # Threshold = smallest selected logit. Every read of the old selection
-    # feeds this reduction, so the barrier after it orders them before the
-    # in-place rewrite below.
+    # Threshold candidate = smallest selected logit. Every read of the old
+    # selection feeds this reduction, so the barrier after it orders them
+    # before the in-place rewrite below. Entries outside [0, length) are not
+    # candidates (the fast kernel's view of the row may be wrong).
     ks = tl.arange(0, K)
     sel = tl.load(orow + ks)
     sel_val = tl.load(
         lrow + (start + sel).to(tl.int64) * logits_s1,
-        mask=sel >= 0,
+        mask=(sel >= 0) & (sel < length),
         other=float("inf"),
     )
     thr = tl.min(sel_val, axis=0)
@@ -136,11 +137,52 @@ def _canonical_topk_kernel(
     tl.debug_barrier()
 
     n_above = tl.full((), 0, tl.int32)
+    n_at = tl.full((), 0, tl.int32)
     for off in range(0, length, BLOCK):
         cols = off + tl.arange(0, BLOCK)
         m = cols < length
         v = tl.load(lrow + (start + cols).to(tl.int64) * logits_s1, mask=m, other=0.0)
         n_above += tl.sum(((v > thr) & m).to(tl.int32), axis=0)
+        n_at += tl.sum(((v == thr) & m).to(tl.int32), axis=0)
+
+    # LANE FIX (2026-11-27): verify the candidate instead of trusting it. It is
+    # the exact K-th largest iff fewer than K values are above it and at least
+    # K are at or above it. The fast decode kernel (persistent_topk) was
+    # measured returning a non-top-K set for MTP verify rows (a 38K prompt:
+    # rows kept 432-451 of the right 512 pools); its too-low minimum then made
+    # n_above exceed K, and the unbounded write below spilled past this row
+    # into the next one. When the check fails, find the exact K-th largest
+    # here: bisect over an order-preserving int32 key of the float (32 counting
+    # passes). The K-th largest value is unique, so the result is both correct
+    # and run-to-run identical whatever the fast kernel returned.
+    exact = (length <= K) | ((n_above < K) & (n_above + n_at >= K))
+    if not exact:
+        lo = tl.full((), -2147483648, tl.int64)
+        hi = tl.full((), 2147483647, tl.int64)
+        for _ in range(32):
+            mid = lo + (hi - lo + 1) // 2
+            cnt = tl.full((), 0, tl.int32)
+            for off in range(0, length, BLOCK):
+                cols = off + tl.arange(0, BLOCK)
+                m = cols < length
+                v = tl.load(
+                    lrow + (start + cols).to(tl.int64) * logits_s1, mask=m, other=0.0
+                )
+                bits = v.to(tl.int32, bitcast=True)
+                key = tl.where(bits >= 0, bits, bits ^ 0x7FFFFFFF).to(tl.int64)
+                cnt += tl.sum(((key >= mid) & m).to(tl.int32), axis=0)
+            take_hi = cnt >= K
+            lo = tl.where(take_hi, mid, lo)
+            hi = tl.where(take_hi, hi, mid - 1)
+        kbits = lo.to(tl.int32)
+        kbits = tl.where(kbits >= 0, kbits, kbits ^ 0x7FFFFFFF)
+        thr = kbits.to(tl.float32, bitcast=True)
+        n_above = tl.full((), 0, tl.int32)
+        for off in range(0, length, BLOCK):
+            cols = off + tl.arange(0, BLOCK)
+            m = cols < length
+            v = tl.load(lrow + (start + cols).to(tl.int64) * logits_s1, mask=m, other=0.0)
+            n_above += tl.sum(((v > thr) & m).to(tl.int32), axis=0)
     ties_left = K - n_above
 
     written = tl.full((), 0, tl.int32)
@@ -153,10 +195,28 @@ def _canonical_topk_kernel(
         tie_rank = ties_seen + tl.cumsum(tie, axis=0) - tie
         take = (((v > thr) & m) | ((tie == 1) & (tie_rank < ties_left))).to(tl.int32)
         pos = written + tl.cumsum(take, axis=0) - take
-        tl.store(orow + pos, cols, mask=take == 1)
+        # Never write past this row's K slots (it used to spill into the next row).
+        tl.store(orow + pos, cols, mask=(take == 1) & (pos < K))
         written += tl.sum(take, axis=0)
         ties_seen += tl.sum(tie, axis=0)
     tl.store(orow + ks, -1, mask=ks >= written)
+
+
+def _mask_logits_past_row_len_(
+    logits: torch.Tensor, row_lens: torch.Tensor, width: int
+) -> None:
+    """Set logits[r, row_lens[r]:width] = -inf for every row, in place.
+
+    Decode indexer logits come from fp8_fp4_paged_mqa_logits with
+    clean_logits=False: columns past a row's valid (pool-granular) length are
+    stale buffer contents, not -inf. See the LANE FIX at the call site.
+    """
+    rows = min(logits.shape[0], row_lens.numel())
+    if rows == 0 or width <= 0:
+        return
+    cols = torch.arange(width, device=logits.device, dtype=torch.int32)
+    past = cols[None, :] >= row_lens[:rows, None].to(torch.int32)
+    logits[:rows, :width].masked_fill_(past, float("-inf"))
 
 
 def _canonicalize_topk_(
@@ -1038,6 +1098,20 @@ def sparse_attn_indexer_kpool(
                 if decode_metadata.max_seq_len is not None
                 else logits.shape[1]
             )
+            # LANE FIX (2026-11-27): the paged MQA logits are produced with
+            # clean_logits=False, so every column at or past a row's own valid
+            # length holds whatever the buffer last contained. The top-k scans
+            # up to topk_max_len, and for MTP verify rows that run shorter than
+            # the batch maximum it picked those stale values (+1..+30 against a
+            # true cut of -90..-190): measured on a 38K prompt, rows 1-2 of a
+            # verify step kept only 432-451 of the right 512 pools, and since
+            # the stale bytes differ run to run, temperature-0 output diverged
+            # at token 4-9. Mask [len_r, topk_max_len) to -inf first so no path
+            # can select outside the row. Device-side only (graph-safe); cost is
+            # rows x topk_max_len writes.
+            _mask_logits_past_row_len_(
+                logits, seq_lens.reshape(-1), min(logits.shape[1], topk_max_len)
+            )
             _persistent_topk_op()(
                 logits,
                 seq_lens,
@@ -1066,6 +1140,10 @@ def sparse_attn_indexer_kpool(
                     select_k,
                 )
             else:
+                # Same stale-column hazard as the persistent_topk path above.
+                _mask_logits_past_row_len_(
+                    logits, seq_lens.reshape(-1), logits.shape[1]
+                )
                 torch.ops._C.top_k_per_row_decode(
                     logits,
                     next_n,
