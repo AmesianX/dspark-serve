@@ -91,17 +91,26 @@ _loaded_from: str | None = None
 # (0 * delta is added), so a client that asks for the original gets it even
 # while another sequence in the same batch is abliterated.
 #
-# Deliberately NOT salting the prefix cache with the scale. Salting does work
-# -- ``cache_salt`` reaches the block hash and chains through
-# ``parent_block_hash``, measured on the live server as 15.66s cold vs 0.89s
-# warm on the same 21,294-token prompt -- but it re-prefills the WHOLE
-# conversation whenever the scale changes, and changing it mid-turn is the
-# feature: the edit is wanted for accepting the request and unwanted for
-# judging what came back. So the cache stays shared, and a prefix keeps the KV
-# computed under whoever prefilled it first. That contamination predates this
-# change and is strictly worse without it, where nothing is separated at all.
-# Its size is unmeasured. Do not "fix" it by salting without re-reading the
-# above.
+# The prefix cache is the default model's alone (2026-11-27). A request that
+# runs at a scale other than the startup default READS the shared cache but
+# never WRITES to it -- neither GPU prefix-cache blocks (kv_cache_manager.py)
+# nor the NVMe offload (kvconn/scheduler.py, max_offload_tokens=0). Before this,
+# the KV an ab_scale=1 request computed went into the shared cache under the
+# same hash, and any later request with that prefix reused it: measured live
+# with tools/bi/ab_cache_leak_probe.py, an ab=0 request reusing an ab=1-primed
+# prefix diverged from its fresh computation at the FIRST token, while ab=0
+# reusing ab=0 was bit-identical. Every cm2 user shares the system prompt, so
+# one ab=1 request landing first after a restart or eviction abliterated that
+# prefix for everyone, and the NVMe tier kept it across restarts. It also
+# leaked inside one conversation: /ab auto's ab=0 follow-ups reused the KV of
+# what the turn's ab=1 request had prefilled.
+#
+# Salting the hash with the scale (the earlier idea) separates them too, but
+# it cannot read the default cache either, so every scale change re-prefills
+# the whole conversation (15.66s cold vs 0.89s warm on 21,294 tokens). Read-
+# only costs far less: the ab request reuses the shared prefix like anyone
+# else, and the next default request recomputes only what the ab request
+# added on top of it.
 
 _scale_vec: torch.Tensor | None = None
 _scale_stage: torch.Tensor | None = None
@@ -227,6 +236,41 @@ def reserve(max_tokens: int, device: torch.device) -> None:
     )
 
 
+def _valid(raw) -> bool:
+    """An ``ab_scale`` the server honours: a real, finite number in [0, 1].
+
+    int or float, not bool. Shared by ``note_request`` (what the forward pass
+    uses) and ``may_write_cache`` (what the cache may keep), so the two can
+    never disagree about which scale a request actually runs at.
+    """
+    return (
+        isinstance(raw, (int, float))
+        and not isinstance(raw, bool)
+        and math.isfinite(raw)
+        and 0.0 <= float(raw) <= 1.0
+    )
+
+
+def may_write_cache(sampling_params) -> bool:
+    """Whether a request's KV may enter the shared prefix cache / NVMe tier.
+
+    Only a request that runs at the startup default may write. One that runs
+    at another scale reads the cache like everyone else but keeps what it
+    computes to itself -- see the block above ``_scale_vec``. Judged exactly
+    as ``note_request`` judges it: a missing or refused ``ab_scale`` runs at
+    the default and therefore may write.
+    """
+    if not enabled():
+        return True
+    extra = getattr(sampling_params, "extra_args", None)
+    if not isinstance(extra, dict) or "ab_scale" not in extra:
+        return True
+    raw = extra.get("ab_scale")
+    if not _valid(raw):
+        return True
+    return float(raw) == _default_scale
+
+
 def note_request(req_id: str, sampling_params) -> None:
     """Record a request's own scale, sent as ``{"vllm_xargs": {"ab_scale": 0|1}}``.
 
@@ -245,18 +289,12 @@ def note_request(req_id: str, sampling_params) -> None:
     global _rejected
     if not enabled():
         return
-    extra = getattr(sampling_params, "extra_args", None) or {}
-    if "ab_scale" not in extra:
+    extra = getattr(sampling_params, "extra_args", None)
+    if not isinstance(extra, dict) or "ab_scale" not in extra:
         _req_scales.pop(req_id, None)
         return
     raw = extra.get("ab_scale")
-    ok = (
-        isinstance(raw, (int, float))
-        and not isinstance(raw, bool)
-        and math.isfinite(raw)
-        and 0.0 <= float(raw) <= 1.0
-    )
-    if not ok:
+    if not _valid(raw):
         _rejected += 1
         _req_scales.pop(req_id, None)
         logger.warning("[ab] req %s: ab_scale=%r 거부 — 유한한 0~1 숫자만. 원본으로 돈다", req_id, raw)

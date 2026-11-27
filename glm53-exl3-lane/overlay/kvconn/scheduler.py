@@ -61,6 +61,11 @@ from vllm.v1.request import Request, RequestStatus
 
 logger = init_logger(__name__)
 
+try:  # LANE PATCH (2026-11-27): see RequestOffloadState.__post_init__
+    import ab_switch as _ab_switch
+except Exception:  # pragma: no cover - lane without the /ab overlay
+    _ab_switch = None
+
 KV_LOAD_TIERS_KEY = "kv_load_tiers"
 MATCHER_MEDIUM_KEY = "medium"
 MATCHER_LOCALITY_KEY = "locality"
@@ -494,6 +499,13 @@ class RequestOffloadState:
             logger.warning(
                 "max_offload_tokens must be a non-negative int, got %r; ignoring", raw
             )
+        # LANE PATCH (2026-11-27): a request at a non-default /ab scale never
+        # stores to the NVMe tier -- its KV is not the default model's. Loads
+        # are untouched. Mirrors kv_cache_manager._may_write_prefix_cache.
+        if _ab_switch is not None and not _ab_switch.may_write_cache(
+            self.req.sampling_params
+        ):
+            self.max_offload_tokens = 0
 
     def update_offload_keys(self) -> None:
         for group_config, group_state in zip(
@@ -1604,6 +1616,11 @@ class OffloadingConnectorScheduler:
             assert len(boundaries) == 1
             boundary = boundaries.pop()
             req = req_status.req
+            if req_status.max_offload_tokens == 0:
+                # LANE PATCH (2026-11-27): nothing of this request may be
+                # stored (non-default /ab scale). `or` below would read 0 as
+                # "no cap" and store the tail anyway.
+                continue
             max_boundary = min(
                 req.num_prompt_tokens,
                 req_status.max_offload_tokens or req.num_prompt_tokens,

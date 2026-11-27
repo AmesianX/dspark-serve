@@ -67,7 +67,7 @@ Everything was adopted based on measurements; the rationale and numbers are in t
 | Correctness | **temperature 0 determinism** — fixed atomic-ordering issues in 3 upstream kernels | Same input → same output |
 | Correctness | Added the missing routed-expert SwiGLU clamp (`swiglu_limit=10`) (missing upstream) | Matches reference behavior |
 | Correctness | **UTF-8 guard** — blocks in the sampler the switch to a Latin token in the middle of a Korean syllable that produced U+FFFD | 7/8 → 0/8, no speed loss |
-| Feature | **Real-time uncensoring switch `/ab`** — §3 below. Per-request only (no global switch, client not trusted) | Per-request switching without restart, 0 effect on other people's requests |
+| Feature | **Real-time uncensoring switch `/ab`** — §3 below. Per-request only (no global switch, client not trusted) | Per-request switching without restart, 0 effect on other people's requests (co-batching and the prefix cache alike) |
 | Feature | **NVMe KV cold-tier offload** — prefix KV evicted from GPU is kept on 200GB of NVMe per node (O_DIRECT, slot-header integrity check, recompute on failure) | Effectively unlimited prefix cache, **cache survives restarts**. Details: [`KV_OFFLOAD.md`](glm53-exl3-lane/KV_OFFLOAD.en.md) |
 | Correctness | **Concurrent batch invariance (temp 0)** — same output regardless of batch composition, load, history or restarts (`GLM53_BATCH_INVARIANT=1`) | Same t/s, prefill −1.5%. Details: [`BATCH_INVARIANCE.md`](glm53-exl3-lane/BATCH_INVARIANCE.en.md) |
 | Operations | **priority scheduling** — codemason sub-agent requests get priority 1 | The main conversation goes first in the queue |

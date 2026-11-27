@@ -31,9 +31,20 @@ curl -H "Authorization: Bearer $KEY" http://localhost:8000/ab   # 상태(읽기 
   예전 `min(max(v,0),1)` 은 NaN 을 그대로 통과시켜 forward 에 NaN 이 들어갔고, 그 요청이
   추적되는 동안 `GET /ab` 가 JSON 직렬화 오류로 500 이 났다.
 - 검증: `tools/test_ab_zero_trust.py`(고치기 전 코드에서 18건 실패 확인), `tools/test_ab_per_request.py`.
-- ⚠️ **남은 공유 지점 = 프리픽스 캐시.** 캐시 키에 scale 이 없어서, `ab_scale=1` 로 먼저
-  프리필된 접두부 KV 를 같은 접두부를 보낸 다른 요청이 재사용한다. 다중 사용자 분리는
-  게이트웨이의 테넌트별 `cache_salt` 로 한다(KV_OFFLOAD.md "격리").
+- **프리픽스 캐시는 기본 모델 전용**(2026-11-27). 기동 기본값과 다른 scale 로 도는 요청은
+  캐시를 **읽기만 하고 쓰지 않는다** — GPU 프리픽스 캐시 블록도, NVMe 오프로드도.
+  전에는 ab=1 요청이 계산한 KV 가 같은 해시로 공유 캐시에 들어가, 같은 접두부를 보낸
+  ab=0 요청이 그걸 재사용했다. 라이브 실측(`tools/bi/ab_cache_leak_probe.py`): 재사용 결과가
+  새로 계산한 결과와 **첫 토큰부터** 갈렸다(ab=0→ab=0 재사용은 비트 동일). cm2 사용자는
+  시스템 프롬프트를 공유하므로 ab=1 하나가 전원의 접두부를 오염시킬 수 있었고, NVMe 계층이
+  재기동 뒤에도 남겼다. 한 대화 안에서도 `/ab auto` 의 ab=0 후속 요청이 첫 요청의 KV 를 이어 썼다.
+  수정 후 같은 프로브 PASS. 비용: ab 요청 다음의 기본 요청이 ab 요청이 새로 계산한 꼬리만
+  다시 프리필한다(ab 요청 자신은 공유 접두부를 그대로 읽는다 — 실측 14.5s → 2.0s).
+  scale 로 salt 하는 방식은 기본 캐시를 못 읽어 매 턴 대화 전체를 다시 프리필하므로 쓰지 않는다.
+  판정은 `ab_switch.may_write_cache()` 하나 — `note_request` 와 같은 검증(`_valid`)을 쓴다.
+  게이트: `overlay/v1core/kv_cache_manager.py`(allocate_slots·cache_blocks),
+  `overlay/kvconn/scheduler.py`(max_offload_tokens=0, partial tail 건너뜀).
+  테스트: `tools/test_ab_cache_write.py`(고치기 전 파일에서 3건 실패 확인).
 
 ## 왜 이 구조인가
 
@@ -73,6 +84,7 @@ abliteration 은 거부를 없애면서 **"없다"고 말하는 능력도 같이
 | `overlay/mla.py` | sparse MLA 11층 훅 (`mla.py:405` 의 `o_proj` 출구) |
 | `overlay/glm5next/kda.py` | KDA 34층 훅 (`kda.py:344`) |
 | `overlay/ab_plugin/` | `GET /ab`(읽기 전용) + 워커 조회(`collective_rpc`). `POST /ab` 는 410 |
+| `overlay/v1core/kv_cache_manager.py` | 비기본 scale 요청은 프리픽스 캐시에 쓰지 않음(읽기는 함) |
 
 플러그인은 vLLM 공식 확장점을 쓴다. 서버 코드를 고치지 않는다. TP 라 스케일이 모든
 워커에 닿아야 해서 두 짝으로 나뉜다 — `vllm.general_plugins` 가 워커 RPC 를 설치하고

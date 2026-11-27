@@ -31,9 +31,20 @@ Clients are not trusted. codemason is public under MIT, so anyone can send anyth
   The old `min(max(v,0),1)` let NaN through unchanged so NaN entered the forward pass, and while that request was
   being tracked, `GET /ab` returned 500 due to a JSON serialization error.
 - Verification: `tools/test_ab_zero_trust.py` (confirmed 18 failures on the code before the fix), `tools/test_ab_per_request.py`.
-- ⚠️ **Remaining shared point = the prefix cache.** The cache key does not include scale, so prefix KV that was first
-  prefilled with `ab_scale=1` is reused by another request that sends the same prefix. Multi-user isolation is done
-  with per-tenant `cache_salt` at the gateway ([`KV_OFFLOAD.en.md`](KV_OFFLOAD.en.md) "Isolation").
+- **The prefix cache belongs to the default model** (2026-11-27). A request running at a scale other than the
+  startup default **reads the cache but never writes it** — neither GPU prefix-cache blocks nor the NVMe offload.
+  Before this, the KV an ab=1 request computed went into the shared cache under the same hash, and an ab=0 request
+  sending the same prefix reused it. Measured live (`tools/bi/ab_cache_leak_probe.py`): the reused result diverged
+  from a fresh computation **at the first token** (ab=0→ab=0 reuse was bit-identical). cm2 users share the system
+  prompt, so one ab=1 request could contaminate everyone's prefix, and the NVMe tier kept it across restarts. Within
+  one conversation, too, `/ab auto`'s ab=0 follow-ups carried on from the first request's KV.
+  After the fix the same probe passes. Cost: the default request after an ab request re-prefills only the tail the
+  ab request computed (the ab request itself still reads the shared prefix — measured 14.5s → 2.0s).
+  Salting by scale is not used: it cannot read the default cache, so every turn would re-prefill the whole conversation.
+  One predicate decides, `ab_switch.may_write_cache()`, using the same validation (`_valid`) as `note_request`.
+  Gates: `overlay/v1core/kv_cache_manager.py` (allocate_slots, cache_blocks),
+  `overlay/kvconn/scheduler.py` (max_offload_tokens=0, partial tail skipped).
+  Test: `tools/test_ab_cache_write.py` (confirmed 3 failures on the files before the fix).
 
 ## Why this design
 
@@ -73,6 +84,7 @@ concentrated here. However, **hallucination is spread across all 45 layers**, so
 | `overlay/mla.py` | Hook for the 11 sparse MLA layers (the `o_proj` exit at `mla.py:405`) |
 | `overlay/glm5next/kda.py` | Hook for the 34 KDA layers (`kda.py:344`) |
 | `overlay/ab_plugin/` | `GET /ab` (read-only) + worker query (`collective_rpc`). `POST /ab` returns 410 |
+| `overlay/v1core/kv_cache_manager.py` | Requests at a non-default scale do not write the prefix cache (they still read it) |
 
 The plugin uses vLLM's official extension points. It does not modify server code. Because of TP, the scale has to reach every
 worker, so it is split into two halves — `vllm.general_plugins` installs the worker RPC and
