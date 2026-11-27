@@ -4,6 +4,16 @@
 
 날짜순 기록. 수치는 그 시점 실측, 해시는 `AmesianX/dspark-serve` 커밋. 상세는 README §5(실험 기록)·HANDOFF·메모리.
 
+## 11-27 (저녁) — `/ab` 캐시 네임스페이스 · 세션별 캐시 격리 + 공개 접두부 공유 · 콜드 프리필 표시
+- **`/ab` 누출 차단**: ab=1 KV 를 ab=0 이 재사용하면 첫 토큰부터 갈림(실측) → KV 정체성 = (토큰, scale). ab 가 계산한 KV 는 꼬리표 키,
+  원본 요청은 원 키만, ab 요청은 자기→원본 순(GPU `block_pool` 오버레이 + NVMe kvconn). 1차 "ab 는 읽기만"은 `/ab on` 캐시 0 이라 폐기.
+- **세션 격리**: 게이트가 `cache_salt` 강제(서버 전용 비밀), 레인은 공개 system 블록까지 salt 없이 공유. cm2 는 시스템 프롬프트를 공개/개인
+  두 메시지로. 함정: `vllm_xargs` 가 JSON true → 1 로 바꿈, cm2 query 가 섹션을 한 문자열로 합쳐 분할이 안 됨 — 둘 다 라이브에서 잡음.
+- **cm2 프리필 표시**: 새 입력(검색 결과 등)까지 "to prefill" 로 뭉쳐 보이던 것을 콜드(이미 보낸 입력의 재계산)만 `⟲ re-read` 로.
+- 최종 라이트 검증 F1~F6 전부 통과(KV_OFFLOAD_TESTPLAN.md §6). 발견: 18K 넘는 프롬프트 콜드 재현성 빈틈(BATCH_INVARIANCE.md §6-c).
+- 남은 것: `/ab auto` 턴 첫 요청의 이중 재계산(ab 를 마지막 사용자 메시지부터만 적용하면 해소), 생각 지우기(clear_thinking)로 인한
+  다음 턴 재계산(Preserved Thinking 여부는 유저 결정).
+
 ## 11-26 ~ 11-27 — NVMe KV 오프로드 · 온도0 배치 불변 · priority (11-27 main 병합, 운영 기본값)
 - **NVMe 오프로드**: 독자 `NvmeOffloadingSpec`(O_DIRECT·슬롯 헤더 crc/지문·SegmentLRU·실패→재계산). KV 10e9 + NVMe 200GB/노드.
   강도 E1~E6 통과 — 82K×18 범람 후 7.0s(콜드 59.7), 446K 재기동 후 10.1s(콜드 357.8), 손상 감지·재계산. 상세 `KV_OFFLOAD.md`.

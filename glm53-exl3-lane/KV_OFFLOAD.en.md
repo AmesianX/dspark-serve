@@ -112,9 +112,14 @@ cm2 install: `~/.local/share/codemason/codemason` (md5 350856d5…), previous on
   and the same tokens give the same computed result (corruption → crc · fingerprint → recompute). The model attends only to its own request's tokens — there is no path to read someone else's KV.
 - What remains = a **timing side channel**: TTFT (hit ~1s vs cold ~13s) can confirm "someone sent this prefix". A known template + a short secret
   allows candidate guessing. NVMe persistence with no TTL → the window during which this can be confirmed is effectively unlimited. KV stays on disk as plaintext tensors.
-- Countermeasure (orthodox, official vLLM): the gateway enforces a **random per-session `cache_salt`** (no identity needed; a 128-bit random value bound to a cookie/session token) and
-  overwrites any salt the client sends. Cross-session hits 0, within-session hits unchanged. Cost = one cold prefill of the system prompt per new session.
-  The salt is mixed into the hash from the first block, so "sharing only a common system prompt" is impossible. The salt also goes into the offload key (in the stage 2 experiments, changing only the salt was confirmed to be cold every time).
+- Countermeasure — **✅ implemented 2026-11-27**: the gateway (`encrypt_gateway.py`) **forces** a `cache_salt` on every decrypted generation
+  request (a client value is overwritten; server-only `GATEWAY_CACHE_SALT_SECRET` + the session id inside the encrypted body, else the client
+  address). Cross-session hits 0, within-session hits unchanged. Upstream mixes the salt in from the first block, which made "share only the common
+  system prompt" impossible; the lane patch (`overlay/v1core/kv_cache_utils.py`) starts the salt at the **last system block** before the first user
+  turn for requests with `vllm_xargs.cache_share_system_prefix=1` — tool schema and static instructions shared, the private system block and the
+  conversation per session. Measured: a new session's first request hits 9,216 shared tokens (from NVMe too); another session's private part hits 0.
+  The salt still goes into the offload key. Details in README §5.8.
+- KV computed under `/ab` lives in a per-scale namespace (tagged keys) that original-model requests never read — AB-SWITCH.md "Zero trust".
 - Supplementary: store disk encryption (LUKS), per-session deletion / retention period (not implemented). Not applicable to single-user operation (current).
 - For an anonymous shared console (virtual machine), **environment remnants** (codemason conversation records `~/.codemason/projects/…`, work files, shell history) are a bigger leak than the cache —
   discarding the environment at session end comes first.

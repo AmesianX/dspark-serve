@@ -4,6 +4,18 @@
 
 Chronological record. Numbers are measurements at the time; hashes are `AmesianX/dspark-serve` commits. Details are in README §5 (experiment records), HANDOFF, and memory notes.
 
+## 11-27 (evening) — `/ab` cache namespaces · per-session cache isolation + shared public prefix · cold-prefill readout
+- **`/ab` leak closed**: an ab=0 request reusing ab=1 KV diverged at the first token (measured) → KV identity = (tokens, scale). KV computed under ab
+  gets tagged keys; original requests read untagged keys only; ab requests read own → original (GPU `block_pool` overlay + NVMe kvconn). The first
+  attempt, "ab requests read only", left `/ab on` with no cache and was dropped.
+- **Session isolation**: the gateway forces `cache_salt` (server-only secret); the lane shares up to the public system block unsalted. cm2 sends the
+  system prompt as public/private messages. Traps caught live: `vllm_xargs` turns JSON true into 1; cm2's query joined the sections into one string so
+  nothing was split.
+- **cm2 prefill readout**: new input (search results etc.) used to be lumped into "to prefill"; now only cold (re-computing already-sent input) shows, as `⟲ re-read`.
+- Final light verification F1~F6 all pass (KV_OFFLOAD_TESTPLAN.en.md §6). Found: a cold-reproducibility gap above 18K tokens (BATCH_INVARIANCE.en.md §6-c).
+- Remaining: double recompute on `/ab auto`'s first request of a turn (fixed by applying ab only from the last user message), and next-turn recompute
+  from clear_thinking (whether to use Preserved Thinking is the user's call).
+
 ## 11-26 ~ 11-27 — NVMe KV offload · temperature-0 batch invariance · priority (merged into main 11-27, on by default)
 - **NVMe offload**: our own `NvmeOffloadingSpec` (O_DIRECT · slot header crc/fingerprint · SegmentLRU · failure → recompute). KV 10e9 + NVMe 200GB/node.
   Stress E1~E6 pass — 7.0s after an 82K×18 flood (cold 59.7), 10.1s after restart with 446K (cold 357.8), corruption detection · recompute. Details in `KV_OFFLOAD.md`.

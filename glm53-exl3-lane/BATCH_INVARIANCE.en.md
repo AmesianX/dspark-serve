@@ -165,6 +165,21 @@ This does not contradict stage 2 (17K prompt, 4608-aligned chunks) passing co-pr
 being prefilled together in one step was never tested. Reproduce: `tools/bi/ab_iso_probe.py diff`, `plain3`.
 Cause not investigated (candidates: KDA chunk boundaries when there are several short varlen prefill rows, or the MLA/indexer prefill path).
 
+## 6-c. ⚠️ Gap: cold reproducibility of prompts longer than 18,432 tokens (found 2026-11-27, unresolved)
+
+Found during the final cache verification. **Unrelated to the cache** — the same prompt sent with two different salts (= both cold), sequentially,
+still diverges. No concurrent requests.
+
+| Prompt | cold vs cold |
+|---|---|
+| 18,640 | bit-identical |
+| 40,164 | diverges at token 8 (|Δlp| 3.4e-4), text differs too |
+| 41,764 | diverges at token 4 (|Δlp| 2.8e-5) — two cache hits diverge at the same place too |
+
+The edge is around the first mamba retention segment (18,432) — when the prefill splits into several chunks. The 11-26 stress test (E1, 82K)
+matched, so the changes since then (11-27 batch-invariant kernel settings, per-request `/ab`, cache-layer overlays) need a bisect. Short prompts
+(2.5K, 18K) are identical both streaming and non-streaming.
+
 ## 7. Remaining work (as of 2026-11-27, items 1~5 all done)
 
 1. (In progress) ABCD end-to-end test with a new hash seed → decide whether kernel-level batch invariance is complete.

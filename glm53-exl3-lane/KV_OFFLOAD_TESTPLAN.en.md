@@ -106,6 +106,21 @@ This must pass first for the concurrent tests to mean anything. Our kernel solut
 - e9: ABCD (149K) concurrent → 8/8 match with sequential
 - Speed gate (A/B in the same session): single decode identical, prefill stays at 1,300+ (ours −1.5%)
 
+## 6. Final light verification F1~F6 (2026-11-27, production settings, all pass)
+
+`tools/kvtest/final_light.py before|after`, `tools/bi/ab_cache_namespace_probe.py live|restart`, cm2 multi-session (through the gateway), `tools/kmeas.py`.
+The prompt is 18K — above that there is a determinism gap unrelated to the cache (BATCH_INVARIANCE.en.md §6-c), kept out of the cache verdict.
+
+| | What | Result |
+|---|---|---|
+| F1 | 19.9K cold → same request | 15.37s → 1.17s, output bit-identical, decode 53.6 t/s |
+| F2 | same request + 1 decode + 1 cold prefill concurrently | bit-identical |
+| F3 | `/ab` namespaces: leak / `on` / `auto` | no leak, `on` 14.9→2.5s, `auto` reuses the prefix 7.5s (fresh 19.7) |
+| F3' | after restart, NVMe: ab=1 / ab=0 / `on` chain | 6.3s (default + own chunks) / 13.0s (bit-identical, no leak) / 8.4s (bit-identical) |
+| F4 | sessions A·B·C (cm2→gateway→vLLM) | public prefix 9,216 shared (incl. NVMe), same session 17,920, others' private part 0 |
+| F5 | F1 request after RESTARTALL | NVMe 6.12s (cold 15.37), bit-identical to before the restart |
+| F6 | kmeas | 34.6 / 39.2 / 44.8 t/s (unchanged) |
+
 ## 5. What to add when moving to a different configuration (recommended)
 
 - **If there is a device mirror (e.g. a prefill sidecar GPU)**: right after an NVMe restore, check that the mirror is refilled and that the mirror path's output
