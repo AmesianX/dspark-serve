@@ -1,3 +1,5 @@
+**한국어** | [English](README.en.md)
+
 # GLM-5.3-Flash EXL3 lane (2×DGX Spark GB10) — 운영 문서
 
 설치·업그레이드는 저장소 루트 [`README.md`](../README.md). 패치 원리·함정은 [`HANDOFF.md`](HANDOFF.md).
@@ -69,7 +71,7 @@
 
 ## 3. 확정 구성 (glm53-serve.env)
 - 이미지 `ghcr.io/entrpi/glm-5.3-flash-exl3-2x-spark:v2.3-tier1`, 모델 **원본** `brandonmusic/GLM-5.3-Flash-tr3-4bpw`,
-  `/ab` 어댑터 `~/Models/glm53-ab-lora`(기본 꺼짐), TP2, max-model-len 524288, KV 8GB/노드(fp8_ds_mla), max-num-seqs 4.
+  `/ab` 어댑터 `~/Models/glm53-ab-lora`(기본 꺼짐), TP2, max-model-len 524288, KV 10e9/노드(fp8_ds_mla, 넘치는 프리픽스는 NVMe 오프로드), max-num-seqs 4.
 - 스펙 디코딩 MTP-4 (`SPEC=none MTP=4`). DFlash2 는 옵션이지만 MTP-4 에 져서 미사용(§5).
 - 정밀도: MoE 라우팅 전문가 W4A16(EXL3 trellis), dense·shared expert·lm_head·MTP eh_proj **W8A16 Marlin**(가중치 FP8, 활성화 BF16), KV FP8.
   **활성화 양자화(W8A8/W4A8)·INT4 는 금지**(작화 유발).

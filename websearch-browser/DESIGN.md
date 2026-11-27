@@ -1,3 +1,5 @@
+**한국어** | [English](DESIGN.en.md)
+
 # browser-lane — 신원 있는 검색 레인
 
 > ⛔ **2026-11-27: SearXNG bang 연결(`!gbr` `!bbr` `!qbr`) 제거.** 3층(오너 신원)으로 갈지를 호출자가

@@ -1,15 +1,17 @@
+**한국어** | [English](HISTORY.en.md)
+
 # GLM-5.3-Flash EXL3 레인 — 작업 이력
 
 날짜순 기록. 수치는 그 시점 실측, 해시는 `AmesianX/dspark-serve` 커밋. 상세는 README §5(실험 기록)·HANDOFF·메모리.
 
-## 11-26 ~ 11-27 — NVMe KV 오프로드 · 온도0 배치 불변 · priority (브랜치 `exp/glm53-kv-offload`, 서빙 중)
+## 11-26 ~ 11-27 — NVMe KV 오프로드 · 온도0 배치 불변 · priority (11-27 main 병합, 운영 기본값)
 - **NVMe 오프로드**: 독자 `NvmeOffloadingSpec`(O_DIRECT·슬롯 헤더 crc/지문·SegmentLRU·실패→재계산). KV 10e9 + NVMe 200GB/노드.
   강도 E1~E6 통과 — 82K×18 범람 후 7.0s(콜드 59.7), 446K 재기동 후 10.1s(콜드 357.8), 손상 감지·재계산. 상세 `KV_OFFLOAD.md`.
 - **온도0 동시 배치 비결정**(main에도 있던 버그) 해결: 행 역할별 고정 커널 설정 7곳, `GLM53_BATCH_INVARIANT=1`.
   디코드 t/s 동일, 82K 프리필 −1.5%(1,340~1,348). cuBLASLt split-K 끄기는 bf16 디코드 2배 느려 기각. 상세 `BATCH_INVARIANCE.md`.
-- **priority**: 서버 `--scheduling-policy priority`, codemason 서브에이전트 `priority=1`(두 리포 `exp/request-priority`, cm2 설치).
+- **priority**: 서버 `--scheduling-policy priority`, codemason 서브에이전트 `priority=1`(codemason 두 리포 main).
 - 11-27 경량 재검증 S1~S5, **2단계(캐시 출처)** A·B·C 통과 — 분할점이 4608 격자·512 단위라 부하·이력·재기동 무관. 수정 불필요.
-  이식용 검증계획서 `KV_OFFLOAD_TESTPLAN.md`(E1~E6 스크립트 `tools/kvtest/`로 보존). main 병합은 필드 테스트 후.
+  이식용 검증계획서 `KV_OFFLOAD_TESTPLAN.md`(E1~E6 스크립트 `tools/kvtest/`로 보존). 11-27 main 병합(실험 브랜치 삭제), 서빙도 main 트리로 옮김.
 
 ## 10-30 ~ 11-01 — 이미지(비전) 수용 main 반영, 한도 5, `.data` 조기 해제 실패
 - `exp/glm53-vision` 을 **main 에 FF 머지**(`15047c4`, 27커밋/3,475줄). 브랜치는 로컬·리모트 모두 삭제.

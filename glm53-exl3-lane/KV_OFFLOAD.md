@@ -1,7 +1,9 @@
-# KV NVMe 오프로드 (exp/glm53-kv-offload) — 설계
+**한국어** | [English](KV_OFFLOAD.en.md)
 
-상태(2026-11-27): **구현·검증 완료, 운영 서버에서 필드 테스트 중.** 강도 E1~E6·경량 S1~S5·2단계(캐시 출처 A·B·C) 전부 통과 —
-절차·결과 정본은 `KV_OFFLOAD_TESTPLAN.md`. main 병합은 필드 테스트(수개월) 후 판단. main 은 원본 유지.
+# KV NVMe 오프로드 — 설계
+
+상태(2026-11-27): **구현·검증 완료, main 병합, 운영 서버 기본값(`KV_OFFLOAD=1`).** 강도 E1~E6·경량 S1~S5·2단계(캐시 출처 A·B·C) 전부 통과 —
+절차·결과 정본은 `KV_OFFLOAD_TESTPLAN.md`. 실험 브랜치 `exp/glm53-kv-offload` 는 11-27 main 에 병합하고 삭제했다.
 
 ## 목표
 메인 대화·서브에이전트가 GPU KV 풀을 두고 서로 밀어내면서 생기는 수 분짜리 재프리필을
@@ -67,7 +69,7 @@
 - 켤 때 `VLLM_USE_V2_MODEL_RUNNER=1` 필수(없으면 FULL 그래프가 PIECEWISE로 내려가 단일 28.4).
 - 남은 후보: 신뢰도 기반 행 배분(DSpark Alg.1, 포크 내장) — MTP 확률 보정부터 측정.
 
-## 운영 설정 (브랜치 env 사본 glm53-serve.env — 비밀값 때문에 gitignore. 여기가 정본)
+## 운영 설정 (glm53-serve.env — 비밀값 때문에 gitignore, 같은 값이 glm53-serve.env.example 에 있다. 여기가 정본)
 ```
 : "${KV_CACHE_MEMORY:=10000000000}"     # 활성 10e9 (+ memwatch 위 여유 2e9)
 : "${KV_OFFLOAD:=1}"

@@ -11,12 +11,12 @@ that ran on the same boxes (DeepSeek-V4, Qwen, etc.) and helper scripts; they ar
 | Document | Contents |
 |---|---|
 | **This README** | Structure, how our setup differs, **fresh installation**, **upgrading from the old version (09-05 kit)** |
-| [`glm53-exl3-lane/README.md`](glm53-exl3-lane/README.md) | Operating commands, configuration knobs, measurement ledger, change procedure |
-| [`glm53-exl3-lane/HANDOFF.md`](glm53-exl3-lane/HANDOFF.md) | How each patch works and its pitfalls (for developers) |
-| [`glm53-exl3-lane/AB-SWITCH.md`](glm53-exl3-lane/AB-SWITCH.md) | Details of the real-time uncensoring switch |
-| [`glm53-exl3-lane/ORIGINAL-VS-ABLITERATED.md`](glm53-exl3-lane/ORIGINAL-VS-ABLITERATED.md) | Why we serve the original instead of the abliterated model |
-| [`glm53-exl3-lane/UTF8-GUARD.md`](glm53-exl3-lane/UTF8-GUARD.md) | Guard against broken Korean text (U+FFFD) |
-| [`glm53-exl3-lane/HISTORY.md`](glm53-exl3-lane/HISTORY.md) | Chronological work history |
+| [`glm53-exl3-lane/README.md`](glm53-exl3-lane/README.en.md) | Operating commands, configuration knobs, measurement ledger, change procedure |
+| [`glm53-exl3-lane/HANDOFF.md`](glm53-exl3-lane/HANDOFF.en.md) | How each patch works and its pitfalls (for developers) |
+| [`glm53-exl3-lane/AB-SWITCH.md`](glm53-exl3-lane/AB-SWITCH.en.md) | Details of the real-time uncensoring switch |
+| [`glm53-exl3-lane/ORIGINAL-VS-ABLITERATED.md`](glm53-exl3-lane/ORIGINAL-VS-ABLITERATED.en.md) | Why we serve the original instead of the abliterated model |
+| [`glm53-exl3-lane/UTF8-GUARD.md`](glm53-exl3-lane/UTF8-GUARD.en.md) | Guard against broken Korean text (U+FFFD) |
+| [`glm53-exl3-lane/HISTORY.md`](glm53-exl3-lane/HISTORY.en.md) | Chronological work history |
 
 ---
 
@@ -46,15 +46,15 @@ that ran on the same boxes (DeepSeek-V4, Qwen, etc.) and helper scripts; they ar
 - Decoding: MTP-4 speculative decoding (the model's built-in MTP head). KV cache FP8 (`fp8_ds_mla`), prefix caching enabled.
 - **The externally exposed surface is `edge/`**: Nginx Proxy Manager (443/80) + searxng. `.66` sits in the router's DMZ, so
   binding to a LAN IP is not security — not publishing a port is the only thing that blocks access.
-  Port policy, rebuild order, and reaching the NPM admin UI through an SSH tunnel: [`edge/README.md`](edge/README.md).
+  Port policy, rebuild order, and reaching the NPM admin UI through an SSH tunnel: [`edge/README.md`](edge/README.en.md).
 - **Search layer 0 is `websearch-index/`**: a local index (SQLite FTS5, 6.7~7.4ms) placed in front of SearXNG.
   Merely relaying external engines gets you blocked more the more you use it, so everything fetched is stored permanently and topics
   asked about twice are promoted to subscriptions, so that **the unblocked area grows the more you use it**. Design, reference values, startup:
-  [`websearch-index/README.md`](websearch-index/README.md).
+  [`websearch-index/README.md`](websearch-index/README.en.md).
 
 ## 2. How our setup differs from the stock kit
 
-Everything was adopted based on measurements; the rationale and numbers are in the [lane README](glm53-exl3-lane/README.md) and [HISTORY](glm53-exl3-lane/HISTORY.md).
+Everything was adopted based on measurements; the rationale and numbers are in the [lane README](glm53-exl3-lane/README.en.md) and [HISTORY](glm53-exl3-lane/HISTORY.en.md).
 
 | Category | What | Effect |
 |---|---|---|
@@ -68,8 +68,8 @@ Everything was adopted based on measurements; the rationale and numbers are in t
 | Correctness | Added the missing routed-expert SwiGLU clamp (`swiglu_limit=10`) (missing upstream) | Matches reference behavior |
 | Correctness | **UTF-8 guard** — blocks in the sampler the switch to a Latin token in the middle of a Korean syllable that produced U+FFFD | 7/8 → 0/8, no speed loss |
 | Feature | **Real-time uncensoring switch `/ab`** — §3 below. Per-request only (no global switch, client not trusted) | Per-request switching without restart, 0 effect on other people's requests |
-| Feature | **NVMe KV cold-tier offload** — prefix KV evicted from GPU is kept on 200GB of NVMe per node (O_DIRECT, slot-header integrity check, recompute on failure) | Effectively unlimited prefix cache, **cache survives restarts**. Details: [`KV_OFFLOAD.md`](glm53-exl3-lane/KV_OFFLOAD.md) |
-| Correctness | **Concurrent batch invariance (temp 0)** — same output regardless of batch composition, load, history or restarts (`GLM53_BATCH_INVARIANT=1`) | Same t/s, prefill −1.5%. Details: [`BATCH_INVARIANCE.md`](glm53-exl3-lane/BATCH_INVARIANCE.md) |
+| Feature | **NVMe KV cold-tier offload** — prefix KV evicted from GPU is kept on 200GB of NVMe per node (O_DIRECT, slot-header integrity check, recompute on failure) | Effectively unlimited prefix cache, **cache survives restarts**. Details: [`KV_OFFLOAD.md`](glm53-exl3-lane/KV_OFFLOAD.en.md) |
+| Correctness | **Concurrent batch invariance (temp 0)** — same output regardless of batch composition, load, history or restarts (`GLM53_BATCH_INVARIANT=1`) | Same t/s, prefill −1.5%. Details: [`BATCH_INVARIANCE.md`](glm53-exl3-lane/BATCH_INVARIANCE.en.md) |
 | Operations | **priority scheduling** — codemason sub-agent requests get priority 1 | The main conversation goes first in the queue |
 | Operations | Vision gate `VISION` (1 = accept images, live default. 0 excludes the tower via `--language-model-only` — avoids GB10 warm-up OOM), backport of the zai-org chat template fix | Stable startup |
 | Operations | Two-node sync check (`sync-lane-67.sh`), memory watchdog, separation of path and site values | Prevents two-node mismatch and OOM incidents |
@@ -99,7 +99,7 @@ curl -H "Authorization: Bearer $KEY" http://<head>:8000/ab                     #
 ```
 
 Measured: on 16 neutral-target questions, refusals 5 → 0; speed cost 1~2ms per step; temperature 0 determinism preserved in both modes.
-The codemason client, with `/ab auto`, puts `ab_scale=1` only on the first request of a user turn (it does not change server state). Details in [AB-SWITCH.md](glm53-exl3-lane/AB-SWITCH.md).
+The codemason client, with `/ab auto`, puts `ab_scale=1` only on the first request of a user turn (it does not change server state). Details in [AB-SWITCH.md](glm53-exl3-lane/AB-SWITCH.en.md).
 
 ## 4. The last bug: '!' collapse (fixed 2026-10-02)
 
@@ -382,9 +382,9 @@ systemctl --user enable --now websearch-index websearch-collect
 expires, it **falls back to ddgs as the single source without any error**, and only result quality drops. It actually once fell back
 for 25 days because of an expired certificate. So keep running `test` periodically even after setup.
 
-- External surface, port policy, vhost, cache: [`edge/README.md`](edge/README.md)
-- Layer-0 design, reference values, KPIs: [`websearch-index/README.md`](websearch-index/README.md)
-- Layer 3 (identity browser, **promoted automatically by the server** — clients cannot request it): [`edge/README.md`](edge/README.md) · [`websearch-browser/DESIGN.md`](websearch-browser/DESIGN.md)
+- External surface, port policy, vhost, cache: [`edge/README.md`](edge/README.en.md)
+- Layer-0 design, reference values, KPIs: [`websearch-index/README.md`](websearch-index/README.en.md)
+- Layer 3 (identity browser, **promoted automatically by the server** — clients cannot request it): [`edge/README.md`](edge/README.en.md) · [`websearch-browser/DESIGN.md`](websearch-browser/DESIGN.en.md)
 
 ---
 

@@ -1,3 +1,5 @@
+**한국어** | [English](ORIGINAL-VS-ABLITERATED.en.md)
+
 # 원본 vs abliterated — 왜 원본을 서빙하는가
 
 서빙 모델은 `brandonmusic/GLM-5.3-Flash-tr3-4bpw`(원본)다. 9월 초에는 lovesenko 의 abliterated 판을

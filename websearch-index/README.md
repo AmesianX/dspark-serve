@@ -1,3 +1,5 @@
+**한국어** | [English](README.en.md)
+
 # websearch-index — 쓸수록 **덜** 막히는 검색 서버
 
 ## 논지

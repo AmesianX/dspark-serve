@@ -1,3 +1,5 @@
+**한국어** | [English](AB-SWITCH.en.md)
+
 # 런타임 abliteration 스위치 (`/ab`)
 
 원본(거부 능력 있음, `brandonmusic/GLM-5.3-Flash-tr3-4bpw`) 가중치를 서빙하면서, abliteration 편집을 **요청 단위로 켰다

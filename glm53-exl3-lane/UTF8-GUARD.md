@@ -1,3 +1,5 @@
+**한국어** | [English](UTF8-GUARD.en.md)
+
 # UTF-8 바이트 가드 — 설계·패치·검증 문서
 
 작성 2026-09-14 · 레인 `glm53-exl3-lane` · vLLM `0.26.1rc1.dev1006+gf223ff9f2.d20260902`

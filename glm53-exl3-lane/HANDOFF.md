@@ -1,3 +1,5 @@
+**한국어** | [English](HANDOFF.en.md)
+
 # HANDOFF — 개발자용: 패치 원리와 함정 (GLM-5.3-Flash EXL3, 2×DGX Spark)
 
 설치·업그레이드는 저장소 루트 [`README.md`](../README.md), 운영 명령과 실측은 [`README.md`](README.md).
@@ -105,7 +107,7 @@ README.md §4~§5 및 메모리 `project_glm53_decode_kernel_truth`, `project_gl
 
 ### 3.11 `/ab` 런타임 스위치 — `AB-SWITCH.md`. ### 3.12 UTF-8 가드 — `UTF8-GUARD.md`. ### 3.13 이미지 수용 — `VISION.md`.
 
-### 3.14 NVMe KV 오프로드 (11-26~27, 브랜치 `exp/glm53-kv-offload`) — `KV_OFFLOAD.md`, 검증 `KV_OFFLOAD_TESTPLAN.md`
+### 3.14 NVMe KV 오프로드 (11-26~27, 브랜치 `exp/glm53-kv-offload` → 11-27 main 병합) — `KV_OFFLOAD.md`, 검증 `KV_OFFLOAD_TESTPLAN.md`
 - 상류 `OffloadingConnector` + 독자 `NvmeOffloadingSpec`(`overlay/kvoffload/glm53_nvme.py`). CPU 계층 없음(통합메모리라 무의미), GPU→고정 바운스→O_DIRECT, 슬롯 고정 크기·rank별 사전할당 파일, 슬롯 헤더(crc·지문)로 rank마다 검증.
 - 상류 커넥터 수정(`overlay/kvconn/*.diff`): 실패 전파(assert 대신 재계산), kpool tail(스크래치) 그룹 제외, 하이브리드 무효블록 처리.
 - 퇴출 = `SegmentLRUPolicy`(상류 LRU는 KDA 그룹 경계 누락·꼬리가 머리보다 최신이 돼 재사용 대화 복원 0).

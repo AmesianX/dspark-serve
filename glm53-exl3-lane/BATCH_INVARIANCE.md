@@ -1,6 +1,8 @@
+**한국어** | [English](BATCH_INVARIANCE.en.md)
+
 # 온도 0 결정성 — 동시 배치에서 출력이 바뀌는 버그 (배치 불변성)
 
-브랜치 `exp/glm53-kv-offload`. **main에도 원래 있던 버그**. 2026-11-26 착수 → **2026-11-27 해결**.
+브랜치 `exp/glm53-kv-offload`(11-27 main 병합). **main에도 원래 있던 버그**. 2026-11-26 착수 → **2026-11-27 해결**.
 
 ## ✅ 결과 요약 (2026-11-27, 운영 설정·CUDA 그래프 켬)
 - 운영 스위치 하나: env `GLM53_BATCH_INVARIANT=1` → launch.sh가 `GLM53_BI_{DENSE,MHC,MLA,MOE,ROUTER,TOPK,INDEXER}=1`로 풀어 양 노드에 전달.

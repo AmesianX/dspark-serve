@@ -1,3 +1,5 @@
+**한국어** | [English](VISION.en.md)
+
 # 비전(이미지) 수용 — 인코더 예산이 자라는 구조와 차단
 
 측정 환경: .66/.67 2노드 TP2, `IMAGE=ghcr.io/entrpi/glm-5.3-flash-exl3-2x-spark:v2.3-tier1`,
