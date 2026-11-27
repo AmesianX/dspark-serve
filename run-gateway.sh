@@ -9,6 +9,7 @@ if [ -z "${LLAMACPP_AES_KEY:-}" ] && [ -f "$GATEWAY_ENV" ]; then
   . "$GATEWAY_ENV"
 fi
 export LLAMACPP_AES_KEY
+export GATEWAY_CACHE_SALT_SECRET  # 서버 전용 salt 비밀 (encrypt_gateway.py, 없으면 기동 거부)
 [ -n "${LLAMACPP_AES_KEY:-}" ] || {
   echo "LLAMACPP_AES_KEY 를 찾을 수 없다 ($GATEWAY_ENV 확인, gateway.env.example 참조)" >&2
   exit 1

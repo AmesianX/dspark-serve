@@ -326,8 +326,9 @@ curl http://localhost:8000/v1/chat/completions -H "Authorization: Bearer <키>" 
 ```bash
 cd ~/work/dspark-serve
 cp gateway.env.example gateway.env && chmod 600 gateway.env
-python3 -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())"  # 이 값을 gateway.env 에
-./setup-systemd.sh install        # systemd 등록 + 기동
+python3 -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())"  # → LLAMACPP_AES_KEY
+python3 -c "import secrets;print(secrets.token_hex(32))"                        # → GATEWAY_CACHE_SALT_SECRET (서버 전용)
+./setup-systemd.sh install        # systemd 등록 + 기동 (salt 비밀이 없으면 기동 거부)
 ./run-gateway.sh status
 ```
 
@@ -335,8 +336,23 @@ python3 -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())"  
 
 | 키 | 값 |
 |---|---|
-| `llamacpp_aes_key` | `gateway.env` 의 `LLAMACPP_AES_KEY` 와 **동일** |
-| `llamacpp_base_url` | `http://<공인주소>:8443` (또는 그 앞의 TLS vhost) |
+| `model_aes_key` | `gateway.env` 의 `LLAMACPP_AES_KEY` 와 **동일** |
+| `model_base_url` | `http://<공인주소>:8443` (또는 그 앞의 TLS vhost) |
+
+(예전 이름 `llamacpp_aes_key`·`llamacpp_base_url` 도 읽히지만 현재 이름은 위와 같다.)
+
+**세션별 캐시 격리 (2026-11-27).** 게이트는 복호화한 생성 요청마다 `cache_salt` 를 **강제로** 넣는다
+(클라이언트 값은 덮어씀). codemason 은 설치마다 무작위 세션 id(`~/.codemason/cache_session`)를
+**암호화된 본문 안에** 보내고, 게이트가 서버 전용 `GATEWAY_CACHE_SALT_SECRET` 으로 salt 를 만든 뒤
+지운다(세션 id 가 없으면 접속 주소로). 그래서 다른 사용자의 접두부를 재사용하거나 응답 시간으로
+엿볼 수 없다. 단 codemason 이 `vllm_xargs.cache_share_system_prefix=1` 로 동의하면, 첫 사용자 턴 앞
+**마지막 system 블록 직전까지**(도구 스키마·고정 지시문)는 모두가 한 캐시를 공유한다 — 경계는
+레인(`overlay/v1core/kv_cache_utils.py`)이 토큰에서 정한다. 실측(cm2→게이트→vLLM, 18.7K 프롬프트):
+새 세션 첫 요청 9,216 토큰 공유 적중 11.1s(콜드 19.0s), 같은 세션 다음 요청 17,920 적중, 다른 세션의
+개인 부분은 토큰이 같아도 적중 0. 테스트: `glm53-exl3-lane/tools/test_gateway_session_salt.py`,
+`test_cache_session_salt.py`.
+- ⛔ salt 비밀을 AES 키에서 파생하지 말 것. AES 키는 클라이언트가 가지는 값이고, 브라우저·WASM 에
+  넣은 값은 공개된 것이다. salt 를 계산할 수 있으면 남의 캐시 네임스페이스를 겨눌 수 있다.
 
 - `gateway.env` 는 `.gitignore` 에 있다. **커밋하지 말 것** — 2026-11-13 까지
   이 키가 `run-gateway.sh` 에 평문으로 커밋돼 있었고, 공개 리포에 올라간 키는

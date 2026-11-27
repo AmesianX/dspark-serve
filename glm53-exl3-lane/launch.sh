@@ -318,6 +318,9 @@ UTF8_GUARD_ARGS=()
 # KV 그룹 assert). 대신 V2 샘플러가 가드를 직접 부른다(overlay/gpu_sampler.py
 # → v1/worker/gpu/sample/sampler.py, MTP 검증도 이 경로를 탄다). 끄기는 아래 환경변수 하나로.
 UTF8_GUARD_ENVS=(-e "VLLM_UTF8_GUARD=$UTF8_GUARD" -e "VLLM_UTF8_GUARD_TOKENIZER=$MODEL_PATH")
+# [ours] 2026-11-27 공개 접두부 공유 + 세션 salt: 특수 토큰 id 를 모델 tokenizer.json 에서 읽는다
+# (overlay/v1core/kv_cache_utils.py _cache_salt_start). 못 읽으면 vLLM 원본 동작(salt 를 0 번 블록에).
+UTF8_GUARD_ENVS+=(-e "GLM53_CACHE_SHARE_TOKENIZER=$MODEL_PATH")
 
 SPEC_ARGS=()
 # [ours] 2026-11-26 MTP_PER_BATCH: vLLM batch-size dynamic speculative decoding

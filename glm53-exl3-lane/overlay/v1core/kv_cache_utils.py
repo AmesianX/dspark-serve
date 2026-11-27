@@ -564,8 +564,16 @@ def generate_block_hash_extra_keys(
         request, start_token_idx, end_token_idx, start_mm_idx
     )
     lora_extra_keys: list[str] = _gen_lora_extra_hash_keys(request)
+    # LANE PATCH (2026-11-27): the salt starts where the request's PRIVATE part
+    # starts, not at token 0 -- see _cache_salt_start. Upstream behaviour (salt
+    # on the first block) is the fallback whenever the request did not opt in.
     cache_salt_keys: list[str] = (
-        [request.cache_salt] if (start_token_idx == 0 and request.cache_salt) else []
+        [request.cache_salt]
+        if (
+            request.cache_salt
+            and start_token_idx == getattr(request, "_glm53_salt_start", 0)
+        )
+        else []
     )
     prompt_embeds_keys = _gen_prompt_embeds_extra_hash_keys(
         request, start_token_idx, end_token_idx
@@ -731,6 +739,82 @@ def is_deepseek_v4_hybrid_kv_cache_config(
     )
 
 
+# --- LANE PATCH (2026-11-27): shared public prefix, salted private part -------
+#
+# A per-session cache_salt (forced by the gateway, never trusted from a client)
+# isolates sessions: upstream mixes it into the FIRST block, so the whole chain
+# differs and nothing is shared -- not even the system prompt and tool schema
+# every codemason session sends verbatim, which is most of the prompt.
+#
+# A request may opt in with vllm_xargs {"cache_share_system_prefix": 1}: the
+# salt then starts at the LAST <|system|> block before the first <|user|> turn
+# (floored to a hash block, so no token of that block is ever unsalted). Blocks
+# before it -- effort header, tool schema, the client's static instructions --
+# hash as everyone's; the private system block (memory, environment, operator
+# directive) and the whole conversation are salted. The boundary is computed
+# here from the token ids; a client only chooses WHETHER its own leading system
+# blocks are public, which can expose nothing but its own content. Text in a
+# user turn cannot move it (only tokens before the first <|user|> count).
+# Without the opt-in, or when the special tokens cannot be resolved, this falls
+# back to upstream (salt on block 0).
+
+_share_tokens: tuple[int, int] | None | bool = False  # False = not resolved yet
+
+
+def _resolve_share_tokens() -> tuple[int, int] | None:
+    global _share_tokens
+    if _share_tokens is not False:
+        return _share_tokens  # type: ignore[return-value]
+    _share_tokens = None
+    path = os.environ.get("GLM53_CACHE_SHARE_TOKENIZER", "")
+    if not path:
+        return None
+    try:
+        import json as _json
+
+        with open(os.path.join(path, "tokenizer.json"), encoding="utf-8") as f:
+            added = {t["content"]: t["id"] for t in _json.load(f).get("added_tokens", [])}
+        _share_tokens = (int(added["<|system|>"]), int(added["<|user|>"]))
+        logger.info(
+            "[cache-share] <|system|>=%d <|user|>=%d — salt starts at the private "
+            "system block for opted-in requests", *_share_tokens,
+        )
+    except Exception:
+        logger.exception("[cache-share] special tokens unresolved — salt stays on block 0")
+        _share_tokens = None
+    return _share_tokens
+
+
+def _cache_salt_start(request: "Request", hash_block_size: int) -> int:
+    sampling_params = getattr(request, "sampling_params", None)
+    extra = getattr(sampling_params, "extra_args", None)
+    if not isinstance(extra, dict):
+        return 0
+    # vLLM's vllm_xargs schema (str | int | float) turns a JSON true into int 1,
+    # so 1 is the opt-in on the wire; True is accepted for in-process callers.
+    # Nothing else ("1", 2, 1.0) is.
+    opt_in = extra.get("cache_share_system_prefix")
+    if not (opt_in is True or (type(opt_in) is int and opt_in == 1)):
+        return 0
+    tokens = _resolve_share_tokens()
+    prompt = request.prompt_token_ids
+    if tokens is None or not prompt:
+        return 0
+    system_id, user_id = tokens
+    try:
+        first_user = prompt.index(user_id)
+    except ValueError:
+        return 0
+    boundary = -1
+    for i in range(first_user - 1, -1, -1):
+        if prompt[i] == system_id:
+            boundary = i
+            break
+    if boundary <= 0:
+        return 0
+    return (boundary // hash_block_size) * hash_block_size
+
+
 def get_request_block_hasher(
     hash_block_size: int,
     caching_hash_fn: Callable[[Any], bytes],
@@ -748,6 +832,9 @@ def get_request_block_hasher(
     def request_block_hasher(request: Request) -> list[BlockHash]:
         start_token_idx = len(request.block_hashes) * hash_block_size
         num_tokens = request.num_tokens
+        if start_token_idx == 0 and request.cache_salt:
+            # LANE PATCH: decided once, from the prompt, before any block hash.
+            request._glm53_salt_start = _cache_salt_start(request, hash_block_size)
 
         if start_token_idx + hash_block_size > num_tokens:
             # Early stop when there no new full blocks created.

@@ -331,8 +331,9 @@ and does not leak a bearer token over plain HTTP.
 ```bash
 cd ~/work/dspark-serve
 cp gateway.env.example gateway.env && chmod 600 gateway.env
-python3 -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())"  # put this value in gateway.env
-./setup-systemd.sh install        # register with systemd + start
+python3 -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())"  # → LLAMACPP_AES_KEY
+python3 -c "import secrets;print(secrets.token_hex(32))"                        # → GATEWAY_CACHE_SALT_SECRET (server-only)
+./setup-systemd.sh install        # register with systemd + start (refuses to start without the salt secret)
 ./run-gateway.sh status
 ```
 
@@ -340,8 +341,23 @@ Put the same key in the client (`~/.codemason/config.json`):
 
 | Key | Value |
 |---|---|
-| `llamacpp_aes_key` | **Identical** to `LLAMACPP_AES_KEY` in `gateway.env` |
-| `llamacpp_base_url` | `http://<public address>:8443` (or a TLS vhost in front of it) |
+| `model_aes_key` | **Identical** to `LLAMACPP_AES_KEY` in `gateway.env` |
+| `model_base_url` | `http://<public address>:8443` (or a TLS vhost in front of it) |
+
+(The old names `llamacpp_aes_key` / `llamacpp_base_url` are still read, but the current names are the ones above.)
+
+**Per-session cache isolation (2026-11-27).** The gateway **forces** a `cache_salt` into every decrypted generation
+request (a client-sent value is overwritten). codemason sends a random per-install session id
+(`~/.codemason/cache_session`) **inside the encrypted body**; the gateway derives the salt with the server-only
+`GATEWAY_CACHE_SALT_SECRET` and removes the id (without one, the client address is used). So nobody can reuse another
+user's prefix or time it. When codemason opts in with `vllm_xargs.cache_share_system_prefix=1`, everything **up to the
+last system block before the first user turn** (tool schema, static instructions) is shared in one cache entry — the
+lane decides that boundary from the tokens (`overlay/v1core/kv_cache_utils.py`). Measured (cm2 → gateway → vLLM, 18.7K
+prompt): a new session's first request hits 9,216 shared tokens in 11.1s (cold 19.0s), the same session's next request
+hits 17,920, and another session's private part hits 0 even with identical tokens. Tests:
+`glm53-exl3-lane/tools/test_gateway_session_salt.py`, `test_cache_session_salt.py`.
+- ⛔ Do not derive the salt secret from the AES key. The AES key is something clients hold, and any value put in a
+  browser/WASM build is public. Whoever can compute salts can aim at someone else's cache namespace.
 
 - `gateway.env` is in `.gitignore`. **Do not commit it** — until 2026-11-13
   this key was committed in plaintext in `run-gateway.sh`, and a key pushed to a public repo

@@ -27,8 +27,12 @@ Then point codemason at it:
 """
 
 import base64
+import hashlib
+import hmac
+import ipaddress
 import json
 import os
+import re
 
 import httpx
 from cryptography.exceptions import InvalidTag
@@ -102,6 +106,69 @@ def _upstream_down(exc: Exception) -> Response:
 # Nothing here is worth documenting publicly: the whole API is one catch-all.
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
+# --- per-session prefix-cache isolation (2026-11-27) --------------------------
+# vLLM's prefix cache is shared by everyone who sends the same tokens, so with
+# no salt one client can time another's prefix (TTFT tells whether it was
+# cached). Every decrypted generation request therefore gets a cache_salt that
+# THIS gateway derives; whatever the client put in `cache_salt` is overwritten
+# (clients are not trusted). The client may name its session with
+# `cache_session` inside the ENCRYPTED body (never a plaintext header -- the
+# threat model here is a TLS interceptor); it is removed before forwarding.
+# Without one, the salt is per client address. A client that opts in with
+# vllm_xargs.cache_share_system_prefix still shares its leading public system
+# blocks (tool schema, static instructions) -- the lane decides that boundary
+# from the tokens (overlay/v1core/kv_cache_utils.py).
+SESSION_SALT = os.environ.get("GATEWAY_SESSION_SALT", "1") != "0"
+# The salt key is a SERVER-ONLY secret, deliberately not derived from the AES
+# key: the AES key is a credential that clients hold (and any key shipped in a
+# browser/WASM build is public), and whoever can compute salts could aim at
+# someone else's cache namespace. Fail closed when it is missing.
+_SALT_SECRET = (os.environ.get("GATEWAY_CACHE_SALT_SECRET") or "").strip()
+if SESSION_SALT and len(_SALT_SECRET) < 32:
+    raise SystemExit("GATEWAY_CACHE_SALT_SECRET (>=32 chars, server-only) is required "
+                     "while GATEWAY_SESSION_SALT is on")
+_SALT_KEY = hashlib.sha256(b"glm53-cache-salt-key\0" + _SALT_SECRET.encode()).digest()
+_SESSION_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+_GEN_PATHS = ("v1/chat/completions", "v1/completions", "v1/responses")
+
+
+def _client_address(request: Request) -> str:
+    peer = request.client.host if request.client else ""
+    try:
+        trusted_proxy = ipaddress.ip_address(peer).is_private or ipaddress.ip_address(peer).is_loopback
+    except ValueError:
+        trusted_proxy = False
+    if trusted_proxy:  # NPM in front: the real address is in its headers
+        fwd = request.headers.get("x-real-ip") or (
+            request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        )
+        if fwd:
+            return fwd
+    return peer or "unknown"
+
+
+def _session_salt(ident: str) -> str:
+    return hmac.new(_SALT_KEY, ident.encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def _apply_session_salt(path: str, request: Request, plaintext: bytes) -> bytes:
+    """Force this session's cache_salt into a generation request body."""
+    if not SESSION_SALT or path.strip("/") not in _GEN_PATHS:
+        return plaintext
+    try:
+        body = json.loads(plaintext)
+    except ValueError:
+        return plaintext
+    if not isinstance(body, dict):
+        return plaintext
+    session = body.pop("cache_session", None)
+    if isinstance(session, str) and _SESSION_RE.match(session):
+        ident = "session:" + session
+    else:
+        ident = "addr:" + _client_address(request)
+    body["cache_salt"] = _session_salt(ident)
+    return json.dumps(body, ensure_ascii=False).encode()
+
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
 async def proxy(path: str, request: Request):
@@ -117,6 +184,8 @@ async def proxy(path: str, request: Request):
         plaintext = decrypt(body)
     except (InvalidTag, ValueError, Exception):  # noqa: BLE001
         return Response(status_code=400, content=b"bad ciphertext or wrong key")
+
+    plaintext = _apply_session_salt(path, request, plaintext)
 
     # Reached only once decrypt() succeeded above -> the caller holds the AES key.
     # Attach our own bearer token; ignore any client-sent one. Deliberately NOT
