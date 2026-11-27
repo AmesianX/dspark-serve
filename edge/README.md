@@ -178,10 +178,30 @@ SearXNG 에는 `json_engine` 으로 물린다. **업스트림 코드는 건드�
   search_url: http://172.18.0.1:8097/search?q={query}&n=20&live=1
 ```
 
-3층(신원 브라우저)은 [`../websearch-browser/DESIGN.md`](../websearch-browser/DESIGN.md).
-`google browser`·`brave browser`·`qwant browser` 세 엔진이 `172.18.0.1:8099` 로 물리고,
-**bang 전용**(`!gbr`)이다 — 기본셋에 넣으면 모든 질의가 8초 경로를 타고 질의 수가 늘어
-차단만 앞당긴다. 적게 쓰는 게 목표인 층이다.
+3층(신원 브라우저, [`../websearch-browser/DESIGN.md`](../websearch-browser/DESIGN.md))은 **엔진이 아니다.**
+오너의 브라우저 신원을 쓸지는 서버가 정한다 — 질의로는 지정할 수 없다. 예전엔 `!gbr` bang 전용
+엔진으로 물렸는데, 그러면 판단을 호출자가 하게 되고(모델은 문법을 몰라 아무도 못 썼다) SearXNG 키를
+가진 누구나 오너 신원으로 검색할 수 있었다(`disabled: true` 여도 bang 은 통한다). 2026-11-27 제거.
+
+지금은 플러그인 [`searxng/plugins/browser_escalate.py`](searxng/plugins/browser_escalate.py) 가
+`post_search` 에서 전 엔진 결과를 보고 **결과 5건 미만, 또는 엔진 절반 이상 무응답 + 10건 미만**일
+때만 레인(`172.18.0.1:8099`)을 직접 부른다. 첫 페이지·general·기본 엔진셋만, 10분 6회 예산,
+질의 캐시 30분, 타임아웃 15초(콜드 Chromium). 세우는 법:
+
+```bash
+# 1) 레인 토큰을 searxng 설정 디렉터리에 (리포 밖, searxng uid 977 만 읽게)
+cat ~/work/dspark-serve/websearch-browser/state/token | docker exec -u 0 -i searxng \
+  sh -c 'cat > /etc/searxng/browser_lane_token && chown 977:977 /etc/searxng/browser_lane_token && chmod 600 /etc/searxng/browser_lane_token'
+# 2) docker-compose.yml 의 플러그인 마운트는 이미 들어 있다 → docker compose up -d
+# 3) settings.yml 의 plugins: 블록(템플릿에 있음)
+```
+
+⛔ 함정 두 개(둘 다 11-27 실측):
+- `plugins:` 블록은 기본 목록과 **병합되지 않고 대체**한다. 기본 플러그인(계산기·추적 URL 제거 등)을
+  같이 적지 않으면 전부 꺼진다. 템플릿에 기본 목록을 옮겨 적어 두었다.
+- 플러그인이 돌려준 일반 결과는 엔진명 `plugin: <id>` 로 들어가는데, `ResultContainer.close()` 의
+  점수 카운터는 기동 시 등록된 엔진에만 있어 **KeyError → 그 검색 전체 실패**. 플러그인이 카운터를
+  등록해서 피한다(`_ensure_score_counter`). 상류 플러그인은 answer 만 돌려줘서 아무도 안 밟았다.
 
 ⛔ **템플릿에서 이 두 엔진은 `disabled: true` 다.** `websearch-index` 를 띄운 박스에서만
 `local index` 의 `disabled` 를 내린다. 서비스 없이 켜 두면 질의마다 unresponsive 가 되는데

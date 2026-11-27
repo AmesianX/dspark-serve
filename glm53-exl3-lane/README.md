@@ -3,8 +3,8 @@
 설치·업그레이드는 저장소 루트 [`README.md`](../README.md). 패치 원리·함정은 [`HANDOFF.md`](HANDOFF.md).
 이 디렉터리는 **양 노드(헤드/워커) 같은 경로·같은 내용**이어야 한다(`sync-lane-67.sh` 가 맞춘다). 최종 갱신 2026-11-27.
 
-> **브랜치 `exp/glm53-kv-offload`(현재 서빙 중, 필드 테스트)**: NVMe KV 오프로드 + 온도0 배치 불변 + priority 스케줄링.
-> main 병합은 필드 테스트 후. 이 브랜치의 운영 설정·결과는 아래 표의 세 문서가 정본.
+> **11-27 main 병합·운영 기본**: NVMe KV 오프로드 + 온도0 배치 불변 + priority 스케줄링 + `/ab` 제로 트러스트(요청별만).
+> 필드 테스트(E1~E6·2단계 A/B/C) 통과. 운영 설정·결과는 아래 표의 세 문서가 정본.
 
 ### 문서 지도 — 뭘 찾을 때 어디를 보는가
 
@@ -13,9 +13,9 @@
 | 기동·정지·상태 확인, 현 설정값, 실측 t/s | **이 문서** | 현행 |
 | 이미지(비전) — 설정·안전범위·측정법·**이미 실패한 시도** | **`VISION.md` §0 필독** | 현행 |
 | 왜 이렇게 패치했나, 다시 밟지 말 함정 | `HANDOFF.md` | 현행 |
-| NVMe KV 오프로드 설계·운영 설정·퇴출·무결성·실측 | `KV_OFFLOAD.md` | 현행(브랜치) |
-| 오프로드 검증 절차(E1~E6·S1~S5·2단계) — 다른 머신 이식 시 그대로 | `KV_OFFLOAD_TESTPLAN.md` | 현행(브랜치) |
-| 온도0 동시 배치 비결정 해결(배치 불변) — 원인·해법·함정·진단 스위치 | `BATCH_INVARIANCE.md` | 현행(브랜치) |
+| NVMe KV 오프로드 설계·운영 설정·퇴출·무결성·실측 | `KV_OFFLOAD.md` | 현행 |
+| 오프로드 검증 절차(E1~E6·S1~S5·2단계) — 다른 머신 이식 시 그대로 | `KV_OFFLOAD_TESTPLAN.md` | 현행 |
+| 온도0 동시 배치 비결정 해결(배치 불변) — 원인·해법·함정·진단 스위치. ⚠️ 짧은 동일 프롬프트 동시 프리필은 미해결(§6-b) | `BATCH_INVARIANCE.md` | 현행 |
 | `/ab` 검열 해제 스위치 사용·원리 | `AB-SWITCH.md` | 현행 |
 | UTF-8 바이트 가드 설계·검증 | `UTF8-GUARD.md` | 현행 |
 | 왜 abliterated 대신 원본을 서빙하는가 | `ORIGINAL-VS-ABLITERATED.md` | 배경(9~10월) |
@@ -78,7 +78,7 @@
   routed 전문가 SwiGLU clamp(`VLLM_EXL3_MOE_SWIGLU_CLAMP=1`), temperature 0 결정성(`B12X_DENSE_SPLITK_TURBO=0` + 오버레이 2개),
   '!' 붕괴 수정(`overlay/v2runner/`), kpool 캐시 수정(`overlay/glm5next/ops/`).
 - 프리픽스 캐시: `VLLM_PREFIX_CACHE_RETENTION_INTERVAL=18432`(mamba 스냅샷 솎기, 근거는 env 주석).
-- **브랜치 `exp/glm53-kv-offload` 차이**: KV 10e9/노드 + `KV_OFFLOAD=1`(NVMe 200GB/노드, 재기동 후에도 캐시 생존), `VLLM_PREFIX_HASH_SEED`=`KV_OFFLOAD_HASH_SEED`(현재 `glm53-kv-offload-bi-1`, 커널·수치 바꾸면 갈 것), `GLM53_BATCH_INVARIANT=1`, `SCHED_POLICY=priority`(codemason 서브에이전트=priority 1), `MTP_PER_BATCH=[[1,1,4],[2,2,3],[3,4,2]]`. 정본 블록은 `KV_OFFLOAD.md` '운영 설정'.
+- **오프로드·배치 불변·priority (11-27 main 병합)**: KV 10e9/노드 + `KV_OFFLOAD=1`(NVMe 200GB/노드, 재기동 후에도 캐시 생존), `VLLM_PREFIX_HASH_SEED`=`KV_OFFLOAD_HASH_SEED`(현재 `glm53-kv-offload-bi-1`, 커널·수치 바꾸면 갈 것), `GLM53_BATCH_INVARIANT=1`, `SCHED_POLICY=priority`(codemason 서브에이전트=priority 1), `MTP_PER_BATCH=[[1,1,4],[2,2,3],[3,4,2]]`. 정본 블록은 `KV_OFFLOAD.md` '운영 설정'.
 
 ## 4. 실측 원장
 

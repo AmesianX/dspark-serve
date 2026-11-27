@@ -64,7 +64,10 @@ DGX Spark(GB10) **두 대**를 200GbE 레일로 묶어 **GLM-5.3-Flash**(4bpw EX
 | 정확성 | **temperature 0 결정성** — 상류 커널 3곳의 atomic 순서 문제 수정 | 같은 입력 → 같은 출력 |
 | 정확성 | routed 전문가 SwiGLU clamp(`swiglu_limit=10`) 누락 보완(상류 누락) | 레퍼런스 동작과 일치 |
 | 정확성 | **UTF-8 가드** — 한글 음절 한복판에서 라틴 토큰으로 갈아타 U+FFFD가 나던 것을 샘플러에서 차단 | 7/8 → 0/8, 속도 손실 없음 |
-| 기능 | **실시간 검열 해제 스위치 `/ab`** — 아래 §3 | 재기동 없이 요청 단위 전환 |
+| 기능 | **실시간 검열 해제 스위치 `/ab`** — 아래 §3. 요청별만(전역 스위치 없음, 클라이언트 불신) | 재기동 없이 요청 단위 전환, 남의 요청엔 영향 0 |
+| 기능 | **NVMe KV 콜드 티어 오프로드** — GPU 에서 밀려난 프리픽스 KV 를 노드당 200GB NVMe 에 보관(O_DIRECT, 슬롯 헤더 무결성 검사, 실패 시 재계산) | 사실상 무한 프리픽스 캐시, **재기동 후에도 캐시 생존**. 상세 [`KV_OFFLOAD.md`](glm53-exl3-lane/KV_OFFLOAD.md) |
+| 정확성 | **동시 배치 불변(temp 0)** — 배치 구성·부하·이력·재기동과 무관하게 같은 출력(`GLM53_BATCH_INVARIANT=1`) | t/s 동일, 프리필 −1.5%. 상세 [`BATCH_INVARIANCE.md`](glm53-exl3-lane/BATCH_INVARIANCE.md) |
+| 운영 | **priority 스케줄링** — codemason 서브에이전트 요청은 priority 1 | 대기열에서 메인 대화가 먼저 |
 | 운영 | 비전 게이트 `VISION`(1=이미지 수용, 라이브 기본. 0 이면 `--language-model-only` 로 타워 제외 — GB10 워밍업 OOM 방지), zai-org 채팅 템플릿 수정 백포트 | 안정 기동 |
 | 운영 | 양 노드 동기화 검사(`sync-lane-67.sh`), 메모리 감시기, 경로·사이트 값 분리 | 2노드 불일치·OOM 사고 예방 |
 
@@ -362,7 +365,7 @@ systemctl --user enable --now websearch-index websearch-collect
 
 - 외부 노출면·포트 정책·vhost·캐시: [`edge/README.md`](edge/README.md)
 - 0층 설계·참고값·KPI: [`websearch-index/README.md`](websearch-index/README.md)
-- 3층(신원 브라우저, bang 전용·선택): [`websearch-browser/DESIGN.md`](websearch-browser/DESIGN.md)
+- 3층(신원 브라우저, **서버가 자동 승격** — 클라이언트는 지정 불가): [`edge/README.md`](edge/README.md) · [`websearch-browser/DESIGN.md`](websearch-browser/DESIGN.md)
 
 ---
 
