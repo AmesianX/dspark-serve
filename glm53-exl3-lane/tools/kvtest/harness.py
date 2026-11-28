@@ -3,7 +3,7 @@ from client import ask
 S = os.path.dirname(os.path.abspath(__file__))
 BODY = open(os.path.join(S, "p60k.txt")).read()          # ~82K tokens of code
 QUESTION = "\n\n위 코드들의 전체 구조를 한국어로 5줄 요약해라."
-WORKER = subprocess.run(["bash", "-c", "source ~/work/dspark-serve-kvoff/glm53-exl3-lane/glm53-serve.env >/dev/null 2>&1; echo $WORKER_SSH"],
+WORKER = subprocess.run(["bash", "-c", "source ~/work/dspark-serve/glm53-exl3-lane/glm53-serve.env >/dev/null 2>&1; echo $WORKER_SSH"],
                         capture_output=True, text=True).stdout.strip()
 
 def prompt(tag, frac=1.0):

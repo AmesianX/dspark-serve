@@ -1,7 +1,7 @@
 #!/bin/bash
 # 같은 세션 A/B: BI 스위치 끔 → 켬. 각각 kmeas + 82K 콜드 프리필 2회
 set -u
-L=~/work/dspark-serve-kvoff/glm53-exl3-lane; S=/tmp/claude-1000/-home-user/c68ea8bc-0b33-4cfc-8570-1d18eb6fc008/scratchpad/kvtest
+L=~/work/dspark-serve/glm53-exl3-lane; S=/tmp/claude-1000/-home-user/c68ea8bc-0b33-4cfc-8570-1d18eb6fc008/scratchpad/kvtest
 export K=$(bash -c "source $L/glm53-serve.env >/dev/null 2>&1; echo \$VLLM_API_KEY")
 for mode in off on; do
   cd $L

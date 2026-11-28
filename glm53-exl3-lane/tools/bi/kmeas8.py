@@ -1,5 +1,5 @@
 import json, urllib.request, time, statistics, sys
-sys.path.insert(0, "/home/user/work/dspark-serve-kvoff/glm53-exl3-lane/tools")
+sys.path.insert(0, "/home/user/work/dspark-serve/glm53-exl3-lane/tools")
 import _lane; K = _lane.api_key()
 def metrics():
     r = urllib.request.Request("http://localhost:8000/metrics", headers={"Authorization": "Bearer " + K})
