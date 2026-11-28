@@ -2248,6 +2248,19 @@ class OffloadingConnectorScheduler:
                     invalidate = getattr(self.manager, "invalidate", None)
                     if invalidate is not None:
                         invalidate(job_status.keys)
+                    # Scheduling the load moved the store cursor past the loaded
+                    # chunks. The request recomputes them from where the load
+                    # started, so they must be stored again from there (not from
+                    # 0: earlier chunks are local hits and, for an /ab request,
+                    # may hold default-namespace KV that must not get its tag).
+                    start = req_status.num_locally_computed_tokens
+                    for group_config, group_state in zip(
+                        self.config.kv_group_configs, req_status.group_states
+                    ):
+                        group_state.next_stored_chunk_idx = min(
+                            group_state.next_stored_chunk_idx,
+                            start // group_config.tokens_per_chunk,
+                        )
                     logger.warning(
                         "KV offloading: load job %d failed on some rank; "
                         "request %s recomputes, %d chunks invalidated",

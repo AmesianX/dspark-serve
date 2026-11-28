@@ -63,6 +63,34 @@ def test_invalidate_frees_slot_and_defers_while_loading():
     assert out is not None and not out.evicted_keys
 
 
+def test_invalidate_clears_rank0_header_so_restart_does_not_reindex():
+    # A chunk that failed verification must not come back after a restart: its
+    # rank-0 header is zeroed before the slot is reused (immediately, or after
+    # the load holding it completes). Needs O_DIRECT, so not on tmpfs.
+    slot_bytes, n = 8192, 4
+    with tempfile.TemporaryDirectory(dir=os.path.dirname(os.path.abspath(__file__))) as d:
+        p = os.path.join(d, "r0.kv")
+        fd = os.open(p, os.O_RDWR | os.O_CREAT); os.ftruncate(fd, n * slot_bytes)
+        for slot, key, seq in ((0, b"A" * 36, 1), (1, b"B" * 36, 2), (2, b"C" * 36, 3)):
+            _write_slot(fd, slot, slot_bytes, key, seq)
+        os.close(fd)
+        mgr = m.NvmeOffloadingManager(n, False, m.scan_index(p, n, slot_bytes, FP),
+                                      index_path=p, slot_bytes=slot_bytes)
+        a, b = OffloadKey(b"A" * 36), OffloadKey(b"B" * 36)
+        mgr.prepare_load([b], ctx)                  # B in use -> deferred
+        mgr.invalidate([a, b])
+        left = sorted(k for _, k, _ in m.scan_index(p, n, slot_bytes, FP))
+        assert left == [b"B" * 36, b"C" * 36]       # A cleared now, B still protected
+        mgr.complete_load([b], ctx)
+        left = sorted(k for _, k, _ in m.scan_index(p, n, slot_bytes, FP))
+        assert left == [b"C" * 36]                  # B cleared after its load
+        idx = m.scan_index(p, n, slot_bytes, FP)
+        mgr2 = m.NvmeOffloadingManager(n, False, idx)   # "restart"
+        assert mgr2.lookup(a, ctx) is LookupResult.MISS
+        assert mgr2.lookup(b, ctx) is LookupResult.MISS
+        assert mgr2.lookup(OffloadKey(b"C" * 36), ctx) is LookupResult.HIT
+
+
 def test_failed_store_releases_slot():
     mgr = m.NvmeOffloadingManager(1, False)
     k = OffloadKey(b"f" * 36)

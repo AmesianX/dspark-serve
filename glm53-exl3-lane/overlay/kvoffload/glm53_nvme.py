@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import mmap
 import os
 import shutil
 import struct
@@ -290,11 +291,18 @@ class NvmeOffloadingManager(CPUOffloadingManager):
     """LRU slot manager; block_id == NVMe slot index on every rank."""
 
     def __init__(self, num_slots: int, enable_events: bool,
-                 restored: Sequence[tuple[int, bytes, int]] = ()):
+                 restored: Sequence[tuple[int, bytes, int]] = (),
+                 index_path: str | None = None, slot_bytes: int = 0):
         super().__init__(num_blocks=num_slots, cache_policy="lru",
                          enable_events=enable_events)
         self.medium = Medium.STORAGE
         self._doomed: set[OffloadKey] = set()
+        # The rank-0 store file whose headers rebuild the index at boot (this
+        # process runs on rank 0's node). An invalidated slot's header is
+        # cleared there, or the next boot would index the bad chunk again.
+        self._index_path = index_path
+        self._slot_bytes = slot_bytes
+        self._index_fd: int | None = None
         self._policy = SegmentLRUPolicy(num_slots)
         self._restore(restored)
 
@@ -339,6 +347,9 @@ class NvmeOffloadingManager(CPUOffloadingManager):
                 continue
             if block.ref_cnt == 0:
                 self._policy.remove(key)
+                # Clear the header before the slot can be handed out again, so
+                # the write can never land on a newer chunk's header.
+                self._clear_index_header(block.block_id)
                 self._free_block(block)
                 self._num_evictable_cache_blocks -= 1
                 dropped.append(key)
@@ -350,6 +361,26 @@ class NvmeOffloadingManager(CPUOffloadingManager):
                 from vllm.v1.kv_offload.base import OffloadingEvent
                 self.events.append(OffloadingEvent(keys=dropped, medium=self.medium,
                                                    removed=True))
+
+    def _clear_index_header(self, slot: int) -> None:
+        """Zero ``slot``'s rank-0 header (synchronous O_DIRECT write)."""
+        if not self._index_path or self._slot_bytes <= 0:
+            return
+        try:
+            if self._index_fd is None:
+                self._index_fd = os.open(self._index_path,
+                                         os.O_RDWR | getattr(os, "O_DIRECT", 0))
+            buf = mmap.mmap(-1, HEADER_BYTES)  # page-aligned, zero-filled
+            try:
+                os.pwrite(self._index_fd, buf, slot * self._slot_bytes)
+            finally:
+                buf.close()
+        except OSError as e:
+            # The slot is still dropped from this run's index; only a restart
+            # could see the stale header again, and its load would fail and
+            # recompute as before.
+            logger.warning("glm53-nvme: could not clear header of slot %d: %s",
+                           slot, e)
 
     def complete_load(self, keys: Collection[OffloadKey],
                       req_context: ReqContext) -> None:
@@ -638,7 +669,7 @@ class NvmeOffloadingSpec(OffloadingSpec):
                             time.perf_counter() - t0)
             self._manager = NvmeOffloadingManager(
                 self.num_slots, self.kv_events_config.enable_kv_cache_events,
-                restored)
+                restored, index_path=self.rank_path(0), slot_bytes=self.slot_bytes)
         return self._manager
 
     def _drop_foreign_stores(self) -> None:
