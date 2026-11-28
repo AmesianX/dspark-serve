@@ -6,7 +6,7 @@ Installation and upgrades: repository root [`README.md`](../README.en.md). Patch
 This directory must have **the same path and the same contents on both nodes (head/worker)** (`sync-lane-67.sh` keeps them aligned). Last updated 2026-11-27.
 
 > **11-27 merged to main, operational default**: NVMe KV offload + temperature-0 batch invariance + priority scheduling + `/ab` zero trust (per-request only).
-> Field tests (E1~E6, stage 2 A/B/C) passed. The three documents in the table below are the source of truth for operational settings and results.
+> Field tests (E1~E6b, stage 2 A/B/C) passed. The three documents in the table below are the source of truth for operational settings and results.
 
 ### Document map — where to look for what
 
@@ -16,7 +16,7 @@ This directory must have **the same path and the same contents on both nodes (he
 | Images (vision) — settings, safe range, measurement method, **attempts that already failed** | **`VISION.md` §0 — must read** | current |
 | Why it was patched this way, pitfalls not to step on again | `HANDOFF.md` | current |
 | NVMe KV offload design, operational settings, eviction, integrity, measurements | `KV_OFFLOAD.md` | current |
-| Offload verification procedure (E1~E6, S1~S5, stage 2) — follow as-is when porting to another machine | `KV_OFFLOAD_TESTPLAN.md` | current |
+| Offload verification procedure (E1~E6b, S1~S5, stage 2) — follow as-is when porting to another machine | `KV_OFFLOAD_TESTPLAN.md` | current |
 | Temperature-0 concurrent-batch nondeterminism fix (batch invariance) — cause, fix, pitfalls, diagnostic switches. ⚠️ Concurrent prefill of short identical prompts is still unresolved (§6-b) | `BATCH_INVARIANCE.md` | current |
 | `/ab` uncensoring switch — usage and mechanism | `AB-SWITCH.md` | current |
 | UTF-8 byte guard design and verification | `UTF8-GUARD.md` | current |

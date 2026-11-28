@@ -4,6 +4,20 @@
 
 Chronological record. Numbers are measurements at the time; hashes are `AmesianX/dspark-serve` commits. Details are in README §5 (experiment records), HANDOFF, and memory notes.
 
+## 11-28 — NVMe offload: re-store and restart re-index after a corrupt chunk · 512K one-direction determinism
+- Two defects the .109 (NONAME) lane found while running E6 on rank1 had the same structure in our code (cc99e33).
+  ① After a load failure the store cursor stayed at the end of the hit, so recomputed chunks were never stored again → move it back to the
+  chunk where the load started (not 0, so default-namespace KV of an /ab request never gets a tag).
+  ② `invalidate` dropped the chunk only from the manager and left the rank0 header, so a restart indexed the bad chunk again → zero the
+  header, then return the slot.
+  Neither produced wrong output (crc caught it every time, then recompute). Our 11-26 E6 only checked detection and recompute, which is
+  why we missed it → E6b (re-store and restart) added to the test plan.
+  Verified: unit tests 9/9 (the new test fails with header clearing disabled); live E6b, 19,598 tokens — recompute matches → after restart
+  NVMe 13,824 restored in 6.7s, match, no load failure.
+- 512K one-direction determinism: one conversation grown 32K→65K→131K→264K→523K, per stage 1 extension + 2 cold, all 48 tokens and
+  logprobs bit-identical (523K: extension restored 258,048 from NVMe, cold TTFT 439–441s, decode 57–58.5 t/s). Test tools pointing at
+  a deleted worktree were fixed too (01cc627).
+
 ## 11-27 (night) — long-context decode indexer top-k bug fixed (correctness)
 - Above 18K tokens two temperature-0 cold runs diverged at token 4–9 → traced to the decode top-k picking a wrong pool set (up to ~80 of
   512) for MTP verify rows, and the canonicalisation kernel trusting its minimum and overwriting the next row. Fix: verify the threshold,

@@ -34,6 +34,12 @@ goes down to each node's NVMe and comes back up when the conversation returns. I
 2. Failures are not hidden: the upstream connector does `assert transfer_result.success` (no failure support).
    Failed jobs are propagated up to the scheduler: a store failure becomes `complete_store(success=False)`, a load failure becomes
    key invalidation + `kv_load_failure_policy=recompute`.
+   ⛔ Fixed 2026-11-28 (cc99e33, found by the .109 NONAME lane in E6 on rank1): invalidation must carry through **re-store and restart**.
+   - Scheduling the load moves the store cursor past the hit, so on failure the cursor goes back to the **chunk where the load started** →
+     the recomputed chunks are stored again in new slots. Not back to 0: earlier chunks are local hits and, for an /ab request, may hold
+     default-namespace KV that must not get a tag.
+   - `invalidate` zeroes the rank0 header **before** returning the slot (synchronous O_DIRECT; the deferred `_doomed` path does the same).
+     Dropping it only from the manager let the restart index pick the bad chunk up again, so that conversation failed at the same spot after every restart.
 3. Fingerprint = model path · checkpoint size · KV dtype · TP · block size · group layout · this file's version.
    If it differs, the whole store is treated as empty.
 4. The kpool tail group (1-block circular scratch, `participates_in_prefix_caching=False`) is excluded from offload.
@@ -45,7 +51,7 @@ goes down to each node's NVMe and comes back up when the conversation returns. I
    Why upstream LRU was dropped (E2): sliding groups refresh only the last window, so KDA state boundaries were missed, and refreshing on completion made the tail
    newer than the head, so a reused conversation got 0 restored.
 3. Reuse rule: touching the anchor key also refreshes the other group keys (KDA state etc.) with the same block hash. Completion (mark_evictable) does not count as use.
-4. Protection: slots being loaded or stored (ref_cnt>0) are never evicted. Slots that fail verification are immediately invalidated and returned (`invalidate`; deferred if in progress).
+4. Protection: slots being loaded or stored (ref_cnt>0) are never evicted. Slots that fail verification are immediately invalidated and returned (`invalidate`; deferred if in progress). The rank0 header is zeroed before the slot is returned (no re-index on restart, 11-28).
 5. Restart: rank0 scans the slot headers and restores the index only for those whose fingerprint matches (assigns negative ticks in write_seq order → reconstructs LRU order).
    rank1 verifies headers at load time. If the fingerprint differs, all slots are empty. No TTL.
 6. ⚠️ For the same key, the old content keeps being used (no re-store). If you change a kernel or numeric path, change `KV_OFFLOAD_HASH_SEED` (→ VLLM_PREFIX_HASH_SEED)
@@ -93,6 +99,7 @@ Debug options (GLM53_MTP_CONF_PROBE, NSYS) are off by default — do not turn th
 | E4 | 133K×3 subagents concurrently → parent / +707K flood → parent | 1.95s (GPU) / 9.7s (NVMe), match |
 | E5 | 149K×4, concurrent restore after restart | Restored KV correct (sequential re-query 4/4 match). Character differences in concurrent decode are batch non-invariance (same thing happens with concurrent GPU hits without offload) |
 | E6 | rank0 body corruption / header deletion | crc detected → recompute (match) / that chunk excluded from the index → partial restore |
+| E6b (11-28) | rank1 body byte → re-store → restart | detected, 6 chunks invalidated, recompute from token 0 (output = cold) → restart → NVMe 13,824 restored in 6.7s with no failure (cold 16.2s), output = cold |
 | Memory | Floor across all experiments | head ≥6.0GB, worker ≥8.75GB (memwatch 3GB) |
 
 ## 2026-11-27 light re-verification (after batch invariance + cm2 priority install, production settings) — all pass
